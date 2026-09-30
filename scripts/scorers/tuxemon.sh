@@ -191,6 +191,7 @@ PY
     # did this; Tuxemon did not, so its banned arms were shown a failure verdict each turn.)
     if printf '%s' "$X_OUT" | grep -qE 'scoring is DISABLED|EVAL_BUDGET'; then
       O_NOT_SCORED=1
+      O_ERR=""   # the missing result file is EXPECTED on a refusal; do not report it as an error
       O_EXTRA="the metered eval-service declined to run it; the orchestrator scores your candidate between turns"
       olog "--- tuxemon ORACLE: not scored in-loop (banned); left for the orchestrator"
     else

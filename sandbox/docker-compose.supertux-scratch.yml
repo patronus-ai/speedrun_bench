@@ -26,7 +26,9 @@ x-stx-actor: &stx_actor
   build:
     context: ..
     dockerfile: sandbox/Dockerfile
-    args: {WITH_PLAYWRIGHT: "1", STRIP_SEEDS: "1"}
+    # No browser in the agent: scoring runs in the eval-service, and a browser plus any game assets
+    # would let an agent build its own scorer.
+    args: {STRIP_SEEDS: "1"}
   networks: [agentnet]
   extra_hosts: ["host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"]
   cpus: 2

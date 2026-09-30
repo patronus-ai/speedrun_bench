@@ -64,7 +64,7 @@ proxy that allows the inference hosts and nothing else.
 | container | holds | role |
 |---|---|---|
 | eval-service | game build, scorer, `EVAL_RESET_SECRET` | scores tapes; unprivileged requests get `429` |
-| agent | opencode, its agent card, `best/` | idles (`sleep infinity`); holds no secret, scorer or game |
+| agent | opencode, its agent card, `best/` | idles (`sleep infinity`); holds no secret, scorer, game or browser |
 | orchestrator | `EVAL_RESET_SECRET`, Docker socket | runs each turn with `docker exec`, then scores the candidate |
 
 The orchestrator has the candidate scored **by path**: the eval-service reads it from a read-only

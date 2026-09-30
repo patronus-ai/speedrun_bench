@@ -1,0 +1,6 @@
+# game      repo                                                   commit      branch
+# The exact commits every result in this benchmark was produced with. Each was checked against a
+# known result before it was pinned (see README, "Provenance of the pins").
+supertux   https://github.com/patronus-ai/supertux-speedrun.git   355af6936d2746b1495f19a974fa307bccd88393   speedrun-bench
+tuxemon    https://github.com/patronus-ai/tuxemon-speedrun.git    7eec88e9ad120fc85c4174324966fdef02eded89   speedrun-bench
+stk        https://github.com/patronus-ai/stk-ghosts.git          339cfeb6624669ed6a84a7e2f61801643fa09ebe   speedrun-bench

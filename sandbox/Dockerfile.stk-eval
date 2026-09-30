@@ -1,0 +1,27 @@
+# EVAL-SERVICE image for SuperTuxKart. Holds the engine; the actor never gets a copy.
+#
+# WHY NOT sandbox/Dockerfile. That image is python:3.10-slim (Debian bookworm, glibc 2.36) and the
+# stk-ghosts native binary needs glibc 2.38 and GLIBCXX_3.4.32. On bookworm — and on this host,
+# which is glibc 2.35 — it dies at load with
+#     libm.so.6: version `GLIBC_2.38' not found
+# before printing anything, which reads like a broken binary rather than a base-image mismatch.
+# ubuntu:24.04 ships glibc 2.39 and libstdc++ 14, which clears both.
+#
+# libcurl4 is the ONLY other runtime dependency: verified by running `ldd` against the binary in a
+# clean 24.04 container, which reported exactly one `not found`. Do not speculatively add SDL/GL
+# packages — the drive runs headless through tools.ghosts and does not open a window.
+#
+# The engine and the 1.5GB stk-assets checkout are BIND-MOUNTED at run time, not baked in: they are
+# the thing the container boundary is protecting, and copying them into a layer would put them in an
+# image the actor's compose could also pull.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv ca-certificates libcurl4 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY scripts/stk_eval_service.py /work/scripts/stk_eval_service.py
+
+# No CMD: the compose supplies it, so the port and repo path stay visible in the compose file
+# rather than being buried in an image.

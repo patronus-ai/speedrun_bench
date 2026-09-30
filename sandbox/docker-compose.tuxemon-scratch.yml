@@ -1,0 +1,794 @@
+name: speedrun-bench   # one project for every game file, so they share one agentnet
+include:
+  - docker-compose.base.yml
+
+# TUXEMON (pygame RPG) — reach spyder_leather_gym in the fewest ENGINE STEPS, from scratch.
+# One hardened TRIO per model: agent (actor) + eval-service (scorer) + orchestrator (driver).
+#
+# Overlay, NOT an edit to docker-compose.yml. Bring up by naming the services explicitly —
+# `--profile tuxemon` does NOT filter the base file's PROFILE-LESS services (proxy, agent,
+# agent-textonly, glm-agent, mimo-agent, mimo-textonly), so a bare `up` would start those too:
+#
+#   cd sandbox
+#   TUX_SWEEPS=200 TUX_EVAL_BUDGET=-1 docker compose \
+#     -f docker-compose.yml -f docker-compose.tuxemon.yml up -d --build \
+#     eval-service-tuxemon-kimi tuxemon-kimi-agent orchestrator-tuxemon-kimi ...
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# TOPOLOGY (the nesmario/mk64 trio, not the supertux single-container arm)
+#   eval-service-tuxemon-<m> : TRUSTED. Owns the Tuxemon checkout, its .venv312 interpreter and
+#                              tux_score.py. Holds EVAL_RESET_SECRET. Both mounts are :ro.
+#   tuxemon-<m>-agent        : the ACTOR. HARDENED=1 + STRIP_SEEDS=1, idles on `sleep infinity`;
+#                              the orchestrator drives ONE turn per `docker exec`. It reaches the
+#                              scorer ONLY over HTTP (TUX_EVAL_URL) and holds NO SECRET, so it
+#                              cannot refill its own per-turn budget. This is exactly the hole in
+#                              docker-compose.supertuxscratchmetered.yml, where the agent DOES
+#                              carry EVAL_RESET_SECRET and the meter is therefore advisory.
+#   orchestrator-tuxemon-<m> : the only holder of EVAL_RESET_SECRET on the agent side. Resets the
+#                              per-turn meter, wipes seeds once (SEED_MODE=scratch), dispatches
+#                              the turns. Needs the Docker socket; the actor image never gets it.
+#
+# THE GAME LIVES OUTSIDE THE REPO. ${TUX_DIR} (checkout + .venv312, the interpreter
+# tux_score.py runs under — pygame-ce is not in /work/.venv) and tuxemon-speedrun tools/
+# (tux_score.py). Mounted at their IDENTICAL host paths because scripts/tux_eval_service.py
+# defaults TUX_PY/TUX_SCORER to those absolute paths and chdirs to ${TUX_DIR}
+# (Tuxemon resolves its mods relative to CWD and dies with "Metadata for mod 'tuxemon' not
+# found" otherwise). Read-only: an arm must not be able to edit the game it is scored on.
+#
+# GAME_LABEL / BEST_PREFIX / TUX_SCORER / TUX_PY / TUX_CWD / prompt hints are NOT set here — they
+# come from scripts/scorers/tuxemon.sh `vocab`. Duplicating them in compose is how they drift.
+#
+# NO OUTPUT_SCHEMA. docker-compose.nesmario-arms.yml pins
+# OUTPUT_SCHEMA=@/work/sandbox/trajectory_schema_nes.json because an NES tape is frame-keyed
+# button segments. The supertux files — the other non-emulator game — set NO schema at all, and
+# there is no Tuxemon schema on disk. A Tuxemon tape is a JSON list of [ACTION, COUNT] pairs
+# (described in the adapter's ORACLE_ARTIFACT), so pointing at the NES schema would reject every
+# valid candidate. Left unset deliberately; do not invent a path.
+#
+# ⚠ READ BEFORE THE FIRST REAL RUN — TWO THINGS TO SET (both flagged, neither guessed):
+#
+#  1. TUX_EVAL_BUDGET=0 BANS THE HARNESS ORACLE TOO, IN THIS TOPOLOGY.
+#     scripts/tux_eval_service.py: negative = unlimited, 0 = BANNED for the agent, n>0 = n agent
+#     evaluations per turn. "The oracle still scores, via the secret" — but the oracle is
+#     scripts/scorers/tuxemon.sh, invoked by opencode_tas_loop.sh INSIDE the agent container, and
+#     scripts/tas_orchestrator.sh does not inject EVAL_RESET_SECRET into its `docker exec`. With
+#     the secret correctly absent from the actor (see below), the harness's own score/verify calls
+#     are UNPRIVILEGED, so the default 0 makes the service 429 every candidate and the arm
+#     promotes nothing for 200 turns. Until the orchestrator forwards the secret, run with
+#     TUX_EVAL_BUDGET=-1 (unlimited) or n>=3 (the loop itself spends 2/turn: score + verify).
+#     The default is left at 0 as specified, so this is an explicit opt-in, not a silent one.
+#
+#  2. AGENT= NAMES ARE THE NES-MARIO CARDS, MIRRORED FROM docker-compose.nesmario-arms.yml.
+#     There are no tuxemon-tas-*.md cards in .opencode/agent/ yet, and inventing names there
+#     would make every arm die on "unknown agent". The nes-mario-tas-* cards select the right
+#     MODEL per nickname, but their prompt bodies are Super Mario Bros 1-1 route knowledge
+#     (flagpole, goomba x-positions, B-dash) — which would be put in front of a model playing a
+#     top-down RPG. Author .opencode/agent/tuxemon-tas-<m>.md (copy the supertux cards' shape,
+#     keep the same model/provider) and then:
+#       sed -i 's/AGENT: nes-mario-tas-/AGENT: tuxemon-tas-/  (already applied)' sandbox/docker-compose.tuxemon.yml
+#
+# FROM SCRATCH: STRIP_SEEDS=1 (no trajectories baked into the actor image), NO_SEED=1
+# (from-scratch framing in the prompt), SEED_MODE=scratch (orchestrator deletes any seed before
+# turn 1). Nothing in this file may state an achieved step count — these strings reach the prompt.
+
+x-tux-eval: &tuxeval
+  # NOT hardened: this is the trusted side and it must be able to run the scorer.
+  # WITH_TUXEMON installs pygame_menu/pyscroll/pytmx into the image's OWN 3.10 venv. The
+  # bind-mounted game tree brings files but not an interpreter: its .venv312/bin/python is a
+  # symlink to python3.12, absent here, and exec'ing it fails with a bare FileNotFoundError
+  # that reads like a missing script. Hence TUX_PY=/work/.venv/bin/python below.
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args: { WITH_TUXEMON: "1" }
+  command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+  networks: [agentnet]
+  # Identical for every arm — the per-arm state is the in-process meter, which is why each arm
+  # gets its OWN service rather than sharing one (a shared service would give 11 arms one budget).
+  environment: &tuxevalenv
+    TUX_EVAL_PORT: "8930"
+    EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+    EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+    TUX_PY: ${TUX_DIR}/.venv312/bin/python
+    TUX_DIR: ${TUX_DIR}
+    TUX_TARGET: spyder_leather_gym.tmx
+    TUX_MAX_STEPS: "200000"
+  volumes:
+    - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+
+x-tux-agent: &tuxagent
+  cpus: 2
+  mem_limit: 8g
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args: { HARDENED: "1", STRIP_SEEDS: "1" }
+  # Idle; scripts/tas_orchestrator.sh drives one turn per `docker exec`.
+  command: ["bash","-lc","sleep infinity"]
+  networks: [agentnet]
+  # agentnet's gateway. NOT `host-gateway`, which resolves to the DEFAULT bridge 172.17.0.1 —
+  # unreachable from this network, and the symptom is a bare "Cannot connect to API" with zero
+  # requests arriving at the host. Set for every arm, not just the one that routes via the host
+  # schema proxy, so a later retarget cannot reintroduce it.
+  extra_hosts:
+    - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+
+x-tux-orch: &tuxorch
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args: { WITH_DOCKER_CLI: "1" }
+  volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+  command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+  networks: [agentnet]
+
+# Shared game framing. Per-arm values (TUX_EVAL_URL, NO_PROXY, AGENT, SWEEP_*) are set on the
+# service. NOTE what is NOT here: EVAL_RESET_SECRET. The actor never holds it.
+x-tux-game: &tuxgame
+  GAME: tuxemon
+  # WRITE THE CANDIDATE INTO THE MOUNTED DIR. opencode_tas_loop.sh defaults CAND to
+  # results/speedrun/candidate.json, which exists only inside the agent container -- the
+  # eval-service cannot see it, so the orchestrator's path scoring returned
+  # 404 "no candidate at /work/candidates/candidate.json" on turn 1. /work/exported is
+  # bind-mounted to out/exported/tuxemon-<arm>, the SAME host dir the eval-service mounts
+  # read-only at /work/candidates. Writing here makes the candidate visible to the scorer
+  # without giving the agent any way to score it.
+  CAND: /work/exported/candidate.json
+  # The loop deletes $CAND at the end of each turn; the orchestrator scores AFTER
+  # that, so it needs a copy that survives. Same dir, so the same read-only mount
+  # exposes it to the eval-service.
+  ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+  SWEEPS: ${TUX_SWEEPS:-200}
+  # The agent's OWN per-turn scoring cap, advertised to it by the loop. Mirrors the value the
+  # service enforces at the HTTP boundary; see caveat 1 in the header.
+  EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+  # There is no Tuxemon (and no emulator) in the HARDENED actor image at all: the actor edits the
+  # tape blind and the LOOP scores it out-of-band. Both flags are set here rather than pinned in
+  # scripts/scorers/tuxemon.sh, exactly as the supertux compose files do. Without ORACLE_FEEDBACK=1
+  # the loop never scores results/speedrun/candidate.json and the arm runs 200 blind turns.
+  NO_EMULATOR: "1"
+  ORACLE_FEEDBACK: "1"
+  MEASURE_BEST: "0"
+  NO_SEED: "1"
+  PLAN: "1"
+  REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+  # A single scoring run walks up to 200k engine steps; the service's own scorer timeout is 1800s.
+  # 0 = no per-turn wall-clock cap, matching the nesmario arms.
+  TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+  HTTP_PROXY: http://proxy:8888
+  HTTPS_PROXY: http://proxy:8888
+  http_proxy: http://proxy:8888
+  https_proxy: http://proxy:8888
+
+services:
+  # ---------------- kimi-k3 (Baseten) ----------------
+  eval-service-tuxemon-kimi:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-kimi
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-kimi:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-kimi-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-kimi-agent
+    depends_on: [proxy, eval-service-tuxemon-kimi]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-kimi
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-kimi
+      TUX_EVAL_URL: http://eval-service-tuxemon-kimi:8930
+      AGENT: tuxemon-tas-kimi-k3
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-kimi:/work/exported"]
+  orchestrator-tuxemon-kimi:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-kimi, tuxemon-kimi-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-kimi-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-kimi:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- deepseek-v4 (Baseten) ----------------
+  eval-service-tuxemon-deepseek:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-deepseek
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-deepseek:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-deepseek-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-deepseek-agent
+    depends_on: [proxy, eval-service-tuxemon-deepseek]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-deepseek
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-deepseek
+      TUX_EVAL_URL: http://eval-service-tuxemon-deepseek:8930
+      AGENT: tuxemon-tas-deepseek-v4
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-deepseek:/work/exported"]
+  orchestrator-tuxemon-deepseek:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-deepseek, tuxemon-deepseek-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-deepseek-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-deepseek:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- inkling-small (Baseten) ----------------
+  eval-service-tuxemon-inkling:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-inkling
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-inkling:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-inkling-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-inkling-agent
+    depends_on: [proxy, eval-service-tuxemon-inkling]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-inkling
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-inkling
+      TUX_EVAL_URL: http://eval-service-tuxemon-inkling:8930
+      AGENT: tuxemon-tas-inkling-small
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-inkling:/work/exported"]
+  orchestrator-tuxemon-inkling:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-inkling, tuxemon-inkling-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-inkling-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-inkling:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- gpt-5.6-sol (OpenAI direct) ----------------
+  # Sol does NOT ride the Baseten gateway: SWEEP_API_BASE is repointed at OpenAI, exactly as the
+  # nesmario sol arm does. api.openai.com is already on the proxy allowlist.
+  eval-service-tuxemon-sol:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-sol
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-sol:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-sol-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-sol-agent
+    depends_on: [proxy, eval-service-tuxemon-sol]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-sol
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-sol
+      TUX_EVAL_URL: http://eval-service-tuxemon-sol:8930
+      AGENT: tuxemon-tas-gpt-sol
+      SWEEP_API_BASE: https://api.openai.com/v1
+      SWEEP_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-sol:/work/exported"]
+  orchestrator-tuxemon-sol:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-sol, tuxemon-sol-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-sol-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-sol:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- claude-opus-5 ----------------
+  # Wiring mirrored VERBATIM from docker-compose.nesmario-arms.yml, including the oddity that
+  # SWEEP_* point at Baseten while OPENROUTER_API_KEY is supplied by name — the opus agent card's
+  # provider block reads {env:OPENROUTER_API_KEY} directly, and omitting it is what produced
+  # "No cookie auth credentials found" on other arms. Do not "tidy" this without re-testing.
+  eval-service-tuxemon-opus:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-opus
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-opus:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-opus-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-opus-agent
+    depends_on: [proxy, eval-service-tuxemon-opus]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-opus
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-opus
+      TUX_EVAL_URL: http://eval-service-tuxemon-opus:8930
+      AGENT: tuxemon-tas-opus
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-opus:/work/exported"]
+  orchestrator-tuxemon-opus:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-opus, tuxemon-opus-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-opus-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-opus:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- DeepSeek-V4-Pro (Baseten) ----------------
+  eval-service-tuxemon-dspro:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-dspro
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-dspro:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-dspro-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-dspro-agent
+    depends_on: [proxy, eval-service-tuxemon-dspro]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-dspro
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-dspro
+      TUX_EVAL_URL: http://eval-service-tuxemon-dspro:8930
+      AGENT: tuxemon-tas-deepseek-pro
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-dspro:/work/exported"]
+  orchestrator-tuxemon-dspro:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-dspro, tuxemon-dspro-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-dspro-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-dspro:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- Gemini 3.7 Flash (HOST schema proxy) ----------------
+  # Gemini emits MALFORMED_FUNCTION_CALL under opencode's tool schemas, so it goes through the
+  # host-side schema proxy on :8790. host.docker.internal is mapped in *tuxagent to 172.18.0.1
+  # (agentnet's gateway) and must ALSO be excluded from the egress proxy, or the request is sent
+  # to tinyproxy instead of the host.
+  eval-service-tuxemon-gemini:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-gemini
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-gemini:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-gemini-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-gemini-agent
+    depends_on: [proxy, eval-service-tuxemon-gemini]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-gemini,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-gemini,host.docker.internal
+      TUX_EVAL_URL: http://eval-service-tuxemon-gemini:8930
+      AGENT: tuxemon-tas-gemini
+      SWEEP_API_BASE: http://host.docker.internal:8790/v1
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-gemini:/work/exported"]
+  orchestrator-tuxemon-gemini:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-gemini, tuxemon-gemini-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-gemini-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-gemini:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- GLM 5.2 (Baseten) ----------------
+  eval-service-tuxemon-glm:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-glm
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-glm:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-glm-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-glm-agent
+    depends_on: [proxy, eval-service-tuxemon-glm]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-glm
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-glm
+      TUX_EVAL_URL: http://eval-service-tuxemon-glm:8930
+      AGENT: tuxemon-tas-glm
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-glm:/work/exported"]
+  orchestrator-tuxemon-glm:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-glm, tuxemon-glm-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-glm-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-glm:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- GLM 5.3 (OpenRouter) ----------------
+  eval-service-tuxemon-glm53:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-glm53
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-glm53:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-glm53-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-glm53-agent
+    depends_on: [proxy, eval-service-tuxemon-glm53]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-glm53
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-glm53
+      TUX_EVAL_URL: http://eval-service-tuxemon-glm53:8930
+      AGENT: tuxemon-tas-glm53
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      # Read BY NAME by the provider block; SWEEP_API_KEY alone yields "No cookie auth
+      # credentials found" and burns the whole iteration budget on failed calls.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-glm53:/work/exported"]
+  orchestrator-tuxemon-glm53:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-glm53, tuxemon-glm53-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-glm53-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-glm53:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- Grok 4.6 (OpenRouter) ----------------
+  eval-service-tuxemon-grok:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-grok
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-grok:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-grok-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-grok-agent
+    depends_on: [proxy, eval-service-tuxemon-grok]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-grok
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-grok
+      TUX_EVAL_URL: http://eval-service-tuxemon-grok:8930
+      AGENT: tuxemon-tas-grok
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-grok:/work/exported"]
+  orchestrator-tuxemon-grok:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-grok, tuxemon-grok-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-grok-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-grok:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+  # ---------------- Inkling full (Baseten) ----------------
+  eval-service-tuxemon-inklingfull:
+    <<: *tuxeval
+    container_name: sb-eval-service-tuxemon-inklingfull
+    # PER-ARM candidate mount, overriding the anchor's volumes. The orchestrator scores BY PATH,
+    # so this service needs read-only sight of THIS arm's exported dir -- and only this arm's.
+    # It cannot live in the shared anchor: every service would then read kimi's candidate.
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # THE GAME'S VENV NEEDS ITS OWN INTERPRETER, AND IT IS NOT IN THIS IMAGE.
+      # .venv312 is built against a uv-managed STANDALONE CPython 3.12.13; its bin/python
+      # is a symlink chain ending at the path below. The image only has 3.10, and Tuxemon
+      # does not actually run on 3.10 despite requires-python='>=3.10': its plugin scanner
+      # calls issubclass(c, interface) on a typing construct that 3.12 tolerates and 3.10
+      # rejects with 'TypeError: issubclass() arg 1 must be a class'. The standalone build
+      # is self-contained (111 MB), so mounting it is simpler and more faithful than
+      # installing a second Python into the image -- and it is the exact interpreter the
+      # determinism results were measured on.
+      - ../out/exported/tuxemon-inklingfull:/work/candidates:ro
+    environment:
+      <<: *tuxevalenv
+      TUX_CAND_ROOT: /work/candidates
+  tuxemon-inklingfull-agent:
+    <<: *tuxagent
+    container_name: sb-tuxemon-inklingfull-agent
+    depends_on: [proxy, eval-service-tuxemon-inklingfull]
+    environment:
+      <<: *tuxgame
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxemon-inklingfull
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-inklingfull
+      TUX_EVAL_URL: http://eval-service-tuxemon-inklingfull:8930
+      AGENT: tuxemon-tas-inkling-full
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxemon-inklingfull:/work/exported"]
+  orchestrator-tuxemon-inklingfull:
+    <<: *tuxorch
+    depends_on: [eval-service-tuxemon-inklingfull, tuxemon-inklingfull-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxemon-inklingfull-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxemon-inklingfull:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUX_SWEEPS:-200}
+      SEED_MODE: scratch
+      # No narrator exists for this game, so do not wait for one. tas_orchestrator.sh
+      # defaults VISION_WAIT=1 and blocks up to 300s per turn for a file nothing writes.
+      # Measured on the SMB fleet: 199/200 turns timed out, ~16.7h dead wait per arm.
+      VISION_WAIT: "0"
+      # Score from OUT HERE, not inside the agent -- see tas_orchestrator.sh.
+      # This is what makes TUX_EVAL_BUDGET=0 a real ban, not a polite request.
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json

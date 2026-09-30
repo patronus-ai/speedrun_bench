@@ -1,0 +1,278 @@
+name: speedrun-bench   # one project for every game file, so they share one agentnet
+include:
+  - docker-compose.base.yml
+
+# SuperTuxKart (stk-ghosts) — one lap of Black Forest, five arms.
+#
+# OWN PROJECT NAME ON PURPOSE. Compose reconciles every service in a project, and several arms in
+# other files are LIVE with results/ that is not volume-backed, so a stray `up` on a shared file
+# destroys their best/ tapes. `name: stk` means compose physically cannot see them.
+#
+# TOPOLOGY: actor / orchestrator / eval-service, three containers per arm.
+# The actor holds no engine — the 14MB native binary and the 1.5GB stk-assets checkout are
+# bind-mounted into the EVAL-SERVICE only. That is what makes EVAL_BUDGET=0 a control rather than
+# a request, and it is why the actor is idle (`sleep infinity`) while the ORCHESTRATOR drives the
+# loop one turn at a time and holds EVAL_RESET_SECRET.
+#
+#   the privilege boundary is the CONTAINER boundary.
+#
+# An oracle running inside the actor is unprivileged and 429s alongside it. SuperTux put the secret
+# in the agent container and its ban is bypassable; pk_eval_service.py had no gate at all and one
+# arm burned 186 turns scoring nothing. Do not copy either.
+#
+# WHY THE EVAL-SERVICE HAS ITS OWN IMAGE (sandbox/Dockerfile.stk-eval)
+# sandbox/Dockerfile is python:3.10-slim = Debian bookworm = glibc 2.36, and this host is 2.35.
+# The stk-ghosts native binary needs glibc 2.38 + GLIBCXX_3.4.32 and dies at load before printing
+# anything, which reads like a corrupt binary rather than a base mismatch. ubuntu:24.04 (glibc
+# 2.39) plus libcurl4 runs it — verified end to end here: a drive of fixtures/human_seed_2.traj
+# returned finished=false, max_distance=40.70, reason=trajectory_exhausted.
+#
+# WHAT THE SCORE MEANS TODAY. tools/ghosts/episode.py:score_key ranks
+#     finished   -> (1, 1.0,  -total_time)
+#     unfinished -> (0, alive, max_distance)
+# and NOTHING HAS FINISHED A LAP YET. Early fleets live entirely in the `unfinished` branch, so the
+# leaderboard reads in METRES, not seconds. The adapter says so to the agent rather than implying a
+# lap time is reachable.
+# ==============================================================================================
+
+
+x-stk-actor: &stkactor
+  cpus: 2
+  mem_limit: 8g
+  image: tas-sandbox-agent:latest   # game-neutral alias; the "sml-" name is legacy, this image serves every game
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args:
+      STRIP_SEEDS: "1"   # scratch: no baked artefacts (a no-op here, results/ is dockerignored)
+  # host-gateway resolves to the DEFAULT bridge (172.17.0.1); these run on agentnet, gateway
+  # 172.18.0.1. Getting it wrong presents as "Cannot connect to API" with zero requests.
+  extra_hosts: ["host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"]
+  networks: [agentnet]
+  restart: "no"
+  # IDLE. The orchestrator execs scripts/opencode_tas_loop.sh one turn per invocation, so the
+  # agent-side code path is identical to every other game; only ownership of the loop moves.
+  command: ["bash", "-lc", "sleep infinity"]
+
+x-stk-actor-env: &stkactorenv
+  HTTP_PROXY: http://proxy:8888
+  HTTPS_PROXY: http://proxy:8888
+  http_proxy: http://proxy:8888
+  https_proxy: http://proxy:8888
+  GAME: supertuxkart
+  BEST_PREFIX: stk
+  STK_TRACK: black_forest
+  STK_KART: tux
+  SWEEPS: "1"
+  PLAN: "1"
+  REPLAN_EVERY: "5"
+  ORACLE_FEEDBACK: "1"
+  NO_EMULATOR: "1"
+  NO_SEED: "1"          # scratch: the agent authors a trajectory from nothing
+  TURN_TIMEOUT: "1800"
+  EXPORT_DIR: /export
+  # Advisory only; the real cap is EVAL_BUDGET on the service, which the actor cannot reach.
+  EVAL_BUDGET: "0"
+
+x-stk-orch: &stkorch
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args: { WITH_DOCKER_CLI: "1" }
+  volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+  command: ["bash", "-lc", "scripts/tas_orchestrator.sh"]
+  networks: [agentnet]
+  restart: "no"
+
+x-stk-orch-env: &stkorchenv
+  GAME: supertuxkart
+  SWEEPS: ${STK_SWEEPS:-200}
+  EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+  # continue, NOT the default `human`: there is no seed FILE to preserve and the default mode's
+  # `find results/speedrun -name '*.json' -delete` would run for nothing.
+  SEED_MODE: scratch    # delete ALL trajectories, including any seed
+  VISION_WAIT: "0"
+  ORACLE_SRC_POST: "1"
+  # The loop deletes results/speedrun/candidate.traj at end of turn unless this is set, so the
+  # oracle would otherwise read the path AFTER the delete and report "nothing to score".
+  ORACLE_KEEP_CAND: "1"
+  # Distance, not frames: with nothing finishing, promotion is on max_distance and LARGER is
+  # better. The adapter emits O_GF only on a real finish, so this bar stays untouched until then.
+  BEST_FRAME_INIT: "999999" # nothing to beat yet
+
+x-stk-eval: &stkeval
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile.stk-eval
+  command: ["bash", "-lc", "python3 /work/scripts/stk_eval_service.py --port 8940"]
+  networks: [agentnet]
+  restart: "no"
+  volumes:
+    # The engine lives HERE and nowhere the actor can reach. Read-only: the drive writes its
+    # trajectory and result into a tempdir, never into the checkout.
+    - ${STK_DIR:?set STK_DIR in sandbox/.env}:/src:ro
+  environment: &stkevalenv
+    STK_REPO: /src
+    STK_TIMEOUT: "900"
+    HOME: /tmp
+    # 0 = BANNED for the actor. The orchestrator bypasses it with X-Eval-Secret.
+    EVAL_BUDGET: ${STK_EVAL_BUDGET:-0}
+    EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+
+services:
+  # ---------------- GPT-5.6-sol ----------------
+  stkscratch-sol:
+    <<: *stkactor
+    container_name: sb-stkscratch-sol
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-sol,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-sol,host.docker.internal
+      AGENT: stk-tas-gpt-sol
+      SWEEP_API_BASE: https://api.openai.com/v1
+      SWEEP_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stkscratch-sol:8940
+      LOG: /tmp/stkscratch-sol/loop.log
+      TMPDIR: /tmp/stkscratch-sol
+      XDG_DATA_HOME: /root/.state/stkscratch-sol/data
+    volumes: ["../out/exported/stkscratch-sol:/export"]
+  orchestrator-stkscratch-sol:
+    <<: *stkorch
+    depends_on: [eval-service-stkscratch-sol, stkscratch-sol]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stkscratch-sol
+      EVAL_SERVICE_URL: http://eval-service-stkscratch-sol:8940
+      STK_EVAL_URL: http://eval-service-stkscratch-sol:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-sol,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-sol,host.docker.internal
+  eval-service-stkscratch-sol:
+    <<: *stkeval
+    container_name: sb-eval-service-stkscratch-sol
+
+  # ---------------- Grok 4.6 ----------------
+  stkscratch-grok:
+    <<: *stkactor
+    container_name: sb-stkscratch-grok
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-grok,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-grok,host.docker.internal
+      AGENT: stk-tas-grok
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      # Required BY NAME: the opencode openrouter provider reads {env:OPENROUTER_API_KEY} and
+      # never looks at SWEEP_API_KEY. Omit it and every turn dies with "No cookie auth
+      # credentials found" while the loop reports evals=0 and runs to completion.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stkscratch-grok:8940
+      LOG: /tmp/stkscratch-grok/loop.log
+      TMPDIR: /tmp/stkscratch-grok
+      XDG_DATA_HOME: /root/.state/stkscratch-grok/data
+    volumes: ["../out/exported/stkscratch-grok:/export"]
+  orchestrator-stkscratch-grok:
+    <<: *stkorch
+    depends_on: [eval-service-stkscratch-grok, stkscratch-grok]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stkscratch-grok
+      EVAL_SERVICE_URL: http://eval-service-stkscratch-grok:8940
+      STK_EVAL_URL: http://eval-service-stkscratch-grok:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-grok,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-grok,host.docker.internal
+  eval-service-stkscratch-grok:
+    <<: *stkeval
+    container_name: sb-eval-service-stkscratch-grok
+
+  # ---------------- Claude Opus 5 ----------------
+  stkscratch-opus:
+    <<: *stkactor
+    container_name: sb-stkscratch-opus
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-opus,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-opus,host.docker.internal
+      AGENT: stk-tas-opus
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stkscratch-opus:8940
+      LOG: /tmp/stkscratch-opus/loop.log
+      TMPDIR: /tmp/stkscratch-opus
+      XDG_DATA_HOME: /root/.state/stkscratch-opus/data
+    volumes: ["../out/exported/stkscratch-opus:/export"]
+  orchestrator-stkscratch-opus:
+    <<: *stkorch
+    depends_on: [eval-service-stkscratch-opus, stkscratch-opus]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stkscratch-opus
+      EVAL_SERVICE_URL: http://eval-service-stkscratch-opus:8940
+      STK_EVAL_URL: http://eval-service-stkscratch-opus:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-opus,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-opus,host.docker.internal
+  eval-service-stkscratch-opus:
+    <<: *stkeval
+    container_name: sb-eval-service-stkscratch-opus
+
+  # ---------------- Kimi-K3 ----------------
+  stkscratch-kimi:
+    <<: *stkactor
+    container_name: sb-stkscratch-kimi
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-kimi,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-kimi,host.docker.internal
+      AGENT: stk-tas-kimi-k3
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stkscratch-kimi:8940
+      LOG: /tmp/stkscratch-kimi/loop.log
+      TMPDIR: /tmp/stkscratch-kimi
+      XDG_DATA_HOME: /root/.state/stkscratch-kimi/data
+    volumes: ["../out/exported/stkscratch-kimi:/export"]
+  orchestrator-stkscratch-kimi:
+    <<: *stkorch
+    depends_on: [eval-service-stkscratch-kimi, stkscratch-kimi]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stkscratch-kimi
+      EVAL_SERVICE_URL: http://eval-service-stkscratch-kimi:8940
+      STK_EVAL_URL: http://eval-service-stkscratch-kimi:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-kimi,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-kimi,host.docker.internal
+  eval-service-stkscratch-kimi:
+    <<: *stkeval
+    container_name: sb-eval-service-stkscratch-kimi
+
+  # ---------------- GLM 5.3 ----------------
+  stkscratch-glm53:
+    <<: *stkactor
+    container_name: sb-stkscratch-glm53
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-glm53,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-glm53,host.docker.internal
+      AGENT: stk-tas-glm53
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stkscratch-glm53:8940
+      LOG: /tmp/stkscratch-glm53/loop.log
+      TMPDIR: /tmp/stkscratch-glm53
+      XDG_DATA_HOME: /root/.state/stkscratch-glm53/data
+    volumes: ["../out/exported/stkscratch-glm53:/export"]
+  orchestrator-stkscratch-glm53:
+    <<: *stkorch
+    depends_on: [eval-service-stkscratch-glm53, stkscratch-glm53]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stkscratch-glm53
+      EVAL_SERVICE_URL: http://eval-service-stkscratch-glm53:8940
+      STK_EVAL_URL: http://eval-service-stkscratch-glm53:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stkscratch-glm53,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stkscratch-glm53,host.docker.internal
+  eval-service-stkscratch-glm53:
+    <<: *stkeval
+    container_name: sb-eval-service-stkscratch-glm53

@@ -1,0 +1,334 @@
+# THIS FILE MUST NOT SHIP EITHER. `COPY . /work` copies .dockerignore itself, and this file is a
+# precise MAP OF EVERYTHING WE ARE HIDING: it names the wolf3d BFS solver and the `tileMap`
+# property it reads, states the wolf3d target (9309f), the SML human gold (6017f) and the fastest
+# known MK64 Wario run (7561f), and lists the exact archive paths holding every prior result. An
+# agent that reads it learns both the frontier and where the answers used to live — so the
+# denylist would leak precisely what the denylist exists to withhold. Excluding it costs nothing:
+# .dockerignore is consumed by the BUILDER from the context root, never needed inside the image.
+.dockerignore
+
+# Keep the host (macOS) venv out — the container builds its own linux venv.
+.venv/
+**/__pycache__/
+*.pyc
+
+# VCS / editor
+.git/
+.gitignore
+.opencode/log/
+
+# Heavy / irrelevant to the agent
+media/
+logs/
+*.mp4
+*.mov
+results/**/*.mp4
+notebooks/
+node_modules/
+
+# Run OUTPUTS must NOT be baked into the image — they are runtime artifacts mounted at
+# /work/exported via a volume. Baking out/ in lets one run's exported trajectories/candidates
+# leak into another run's image (e.g. a no-emulator open-loop run could read a closed-loop
+# run's validated results), contaminating the experiment.
+out/
+
+# Secrets must NOT be baked into the image (passed via env at runtime).
+# NOTE: .dockerignore patterns are NOT recursive, so `.env` / `*.env` only ever matched a
+# ROOT-level file — and the only .env in this repo is sandbox/.env, which was therefore being
+# baked into every agent image (BASETEN/OPENAI/GEMINI keys + EVAL_RESET_SECRET, the secret that
+# resets the hardened eval-service per-turn budget). `**/.env` matches it at any depth.
+.env
+*.env
+**/.env
+**/*.env
+.tools/
+
+# --- RESULT ARTIFACTS MUST NOT SHIP IN THE AGENT IMAGE ---
+# The repo is COPYed into the agent image, so anything here is readable by the agent. A cold-start
+# run read sandbox/mk64_frontier_history/ and .opencode/skills/mk64-tas-techniques/SKILL.md and
+# lifted the answer straight out: "the sandwich technique produced the fastest known Wario run at
+# 7561 frames", then used our own best trajectories as graft donors. The prompt was clean; the
+# IMAGE was not.
+sandbox/mk64_frontier_history/
+sandbox/mk64_runs_archive/
+sandbox/civ_hof/
+sandbox/figures/
+sandbox/mk64_slowmo_lap.json
+
+# --- SUPER MARIO LAND result artifacts (added for the ORACLE_FEEDBACK arms) ---
+# results/speedrun/ was emptied in the working tree and its 64 prior trajectories were MOVED to
+# sandbox/sml_runs_archive/ — which was NOT ignored, so every one of them (the whole optimized
+# search history, the human gold, plus ISSUE.md / README.md / REFINEMENT_STRATEGY.md describing
+# the search) was still being baked into the agent image. A "from scratch" arm could simply read
+# the finished answer. The SEEDED arms get the human gold injected at RUN TIME via a read-only
+# bind mount (see the oracle2 profile in sandbox/docker-compose.yml), never from the image.
+sandbox/sml_runs_archive/
+sandbox/seeds/
+sandbox/coldstart_exported/
+sandbox/RESULTS_SUMMARY_*.md
+# --- WOLFENSTEIN 3D E1L1 (wolf3d) — THE ANSWER AND THE ANSWER-GENERATOR MUST NOT SHIP ---
+# The wolf3d arms (4 models x scratch/seeded) all run from ONE shared image, so anything left
+# here reaches the from-scratch arms too. Two repo artifacts hand over the finished level:
+#   1. scripts/wolf3d_route.py is a BFS SOLVER: it reads the game's `tileMap` (the level tile
+#      grid), locates the exit and EMITS a complete winning route. An arm that can run it never
+#      has to search at all.
+#   2. sandbox/wolf3d_e1l1_route.json IS the finished, validated 9309-frame route.
+# Seeded arms are entitled to (2) — but they receive it at RUN TIME via a read-only bind mount
+# declared in the compose file, never baked into the image that scratch arms also boot from.
+#
+# PATTERN FORM MATTERS: .dockerignore patterns are NOT recursive. `sandbox/wolf3d_e1l1_route.json`
+# on its own matched only that one exact path — the same class of bug that shipped sandbox/.env
+# for months because `.env` only ever matched a root-level file (see the note above). Every rule
+# below therefore gets both its exact path and a `**/` form, so a copy that lands under any
+# other directory is still excluded.
+scripts/wolf3d_route.py
+**/wolf3d_route.py
+sandbox/wolf3d_e1l1_route.json
+**/wolf3d_e1l1_route.json
+**/*wolf3d*route*
+**/*wolf3d*solve*
+**/*route*wolf3d*
+# A third leak: the host launcher names the solver in its rsync excludes AND states the target
+# in plain text (SEED_FRAMES=9309), so a scratch arm that read it would learn the bar to beat.
+scripts/launch_wolf3d_arms.sh
+**/launch_wolf3d_arms.sh
+# The E3L9 boss-probe env/scorer (feasibility study, no arm runs from them). wolf3d_boss_env.py
+# ships a TILEMAP dumper — the same `tileMap` read that got wolf3d_route.py excluded above — so
+# it must not land in the shared wolf3d image either. No live arm needs these files.
+scripts/wolf3d_boss_env.py
+scripts/wolf3d_boss_score.py
+**/wolf3d_boss_env.py
+**/wolf3d_boss_score.py
+# (sandbox/figures/ is already excluded above; it holds plot_wolf3d.py and A_run_log.csv, which
+# tabulate achieved wolf3d frame counts. Noted here so the wolf3d reasons live in one place.)
+# Raw agent session transcripts: plain-text tables of every SML result.
+# `**/` IS LOAD-BEARING. A bare `2026-*.txt` matches only the repo ROOT, so
+# sandbox/2026-08-21-...-continued-from-a-previous-c.txt (1.2MB, quotes achieved pk scores) shipped
+# to every agent container. Verified visible inside a running arm before this was widened.
+**/2026-*.txt
+
+# sandbox/patches/ is HOST-SIDE engine-patch documentation and nothing in the repo imports it, but
+# patches/tuxemon/README.md:30 records a validation run against `tapes_by_model/glm53_best_98116f
+# .json` and states `engine_steps=98116`. That is a PRIOR RUN'S RECORD, handed to every arm whose
+# BRIEF says the bar is 105,400. Confirmed read: tuxmap-fable quoted those two lines verbatim in
+# its turn-1 output, then finished first at 96,151 -- i.e. the leaked number acted as a target.
+# The TAPE itself never leaked (tux_tas is mounted into the eval-service only), so this gave a
+# frontier, not a solution -- but it contaminates any claim that a score was discovered unaided.
+sandbox/patches/
+# plots/ is a LEADERBOARD IN MACHINE-READABLE FORM and must never ship. pk_all_series.json is a
+# dict keyed by MODEL NAME ('kimi', 'opus', 'glm', 'gpt-sol', 'ds-flash', 'ds-pro', 'grok',
+# 'glm-5.3') whose values are the full per-turn score series; plot_pokemon.py hardcodes the same
+# numbers. An arm that reads either learns the achievable frontier AND every rival's trajectory.
+# Excluded wholesale rather than per-file: this directory accumulates new series per experiment,
+# so an allowlist would silently go stale the next time a plot is added.
+plots/
+# Prose that quotes achieved SML frame counts (the frontier a from-scratch arm must not be told).
+sandbox/ONLINE_SPEEDRUN.md
+sandbox/ARTIFACTS.md
+# RESEARCH_PROPOSAL.md tabulates the findings of the earlier SML batches, frame counts included.
+RESEARCH_PROPOSAL.md
+# TUXEMON_ANALYSIS.md names the tux fleet's achieved scores (98,116 / 99,226) AND the specific
+# inefficiency worth exploiting -- four redundant whiteout laps, ~60k steps -- which is precisely
+# what the tuxtrail arms are supposed to discover for themselves.
+TUXEMON_ANALYSIS.md
+# AGENT_GLOSSARY.md distils every model's TECHNIQUE into one page -- bisection, broadcast,
+# witness/licensing, mash-period floors, fallback axes. It names few scores, but shipping it
+# would hand each arm the collective playbook and destroy the strategy-diversity result that
+# the cross-model comparison exists to measure.
+AGENT_GLOSSARY.md
+# POKEMON_ANALYSIS.md is the same hazard for the pk arms and MUST NOT ship. It names an ACHIEVED
+# score (glm53's 126755, far under the 160021 the agent is shown as its bar), says which boundary
+# strategies paid off, and documents the savestate WRAM decode that condition B exists to remove.
+# `COPY . /work` (sandbox/Dockerfile:105) would hand every arm the answer and the other models'
+# playbooks in one file.
+POKEMON_ANALYSIS.md
+# The compose file is the experiment DESIGN (arm names, seeding, the gold's frame count) and is
+# never needed inside an agent container — only on the host that runs `docker compose`.
+sandbox/docker-compose.yml
+sandbox/docker-compose.yml.bak*
+# Non-oracle SML agent cards quote an achievable frame RANGE. The oracle cards
+# (.opencode/agent/sml-tas-*-oracle.md) are clean and are the only ones these arms need.
+# They also name specific prior best trajectories ("fused-glm-5.2_sml_1-1_<N>f.json (~<N>f)").
+# Drop every SML card, then re-admit ONLY the *-oracle ones these arms actually run.
+# NOTE: this also removes them from the legacy `agent` / `glm-agent` / `mimo-agent` compose
+# services' images; those point at retired endpoints and are not in use.
+.opencode/agent/sml-tas*.md
+!.opencode/agent/sml-tas-*-oracle.md
+# --- GameWorld 03_astray — THE ROUTE AND THE ROUTE-GENERATOR MUST NOT SHIP ---
+# The 4 astray arms are all FROM SCRATCH and all boot the ONE shared astray-tas-oracle image,
+# so anything left here reaches every one of them. scripts/astray_route.py reads window.maze
+# (the wall grid), BFSes to the exit and drives a closed-loop controller that EMITS a finished
+# [key, frames] action list — an arm that can run it never has to search at all. Any saved
+# route is the answer itself.
+#
+# HONEST SCOPE — what this does and does NOT contain. It withholds (a) the finished route,
+# (b) the tool that generates one, and (c) every achieved frame count. It does NOT withhold
+# the maze layout: scripts/astray_score.py's min_dist_cells feedback is a real BFS geodesic,
+# so scripts/astray_env.py (which must ship, the scorer imports it) necessarily contains the
+# code that reads window.maze. That containment would be theatre anyway — the game itself is
+# bind-mounted into every arm and the agent has bash and a browser, so an agent that wants the
+# wall grid can always read it out of the game. Discovering the maze is legitimate play here;
+# being handed a finished trajectory is not. Claiming more than this would be a lie.
+#
+# PATTERN FORM MATTERS: .dockerignore patterns are NOT recursive (this is the bug that shipped
+# sandbox/.env for months), so every rule gets both its exact path and a `**/` form.
+scripts/astray_route.py
+**/astray_route.py
+**/*astray*route*
+**/*astray*solve*
+**/*route*astray*
+**/*astray*[0-9]f.json
+
+# ============================================================================================
+# STRUCTURAL HARDENING — CLASS RULES, NOT PER-INCIDENT ONE-OFFS
+# ============================================================================================
+# Everything above this line was written one leak at a time: a specific solver, a specific
+# route file, a specific archive directory. That is why the E3L9 and Grok builds each needed
+# their OWN denylist (sandbox/Dockerfile.e3l9.dockerignore, sandbox/Dockerfile.grokw3d.
+# dockerignore) before they could ship — the root list left sandbox/assert_e3l9_arm.py,
+# sandbox/docker-compose.e3l9.yml and sandbox/Dockerfile.e3l9* in the image, and those three
+# quote the E1L1 solver, the `tileMap` read and the literal 9309-frame target in plain text.
+# A build that FORGOT to point at a private denylist therefore shipped the answer.
+#
+# The rules below are by CLASS, so a new experiment's plumbing is excluded the day it is
+# written rather than the day someone notices it leaked. Every rule carries BOTH a root-anchored
+# and a `**/` form, because .dockerignore patterns are NOT recursive (the bug that shipped
+# sandbox/.env for months).
+#
+# NONE of this is needed inside an agent container: the Dockerfile is read by the BUILDER from
+# its own path (never through the context copy), compose runs on the HOST, and the assert_*_arm
+# gates are bind-mounted READ-ONLY at run time precisely so the image carries no description of
+# what is being withheld.
+
+# --- 1. Build / experiment plumbing (names arms, seeding, targets, and the withheld files) ---
+Dockerfile*
+**/Dockerfile*
+# Trailing-suffix forms matter: a bare `*.dockerignore` does NOT match `.dockerignore.bak`,
+# and that backup was still shipping (it is an older copy of this very denylist).
+.dockerignore*
+*.dockerignore*
+**/.dockerignore*
+**/*.dockerignore*
+docker-compose*
+**/docker-compose*
+# The COMPOSE GENERATORS and launch scripts carry the same experiment-design prose as the compose
+# files they emit -- prior self-eval counts, cross-model standings, achieved scores -- and are
+# equally host-only. Excluding `docker-compose*` alone was not enough: gen_pknostate.py and
+# gen_tuxtrail.py were verified VISIBLE inside a running arm, quoting exactly the material the
+# compose exclusion was written to withhold. Anything that generates or launches an experiment
+# belongs on the host, never in the image.
+sandbox/gen_*.py
+sandbox/launch_*.sh
+**/gen_pknostate.py
+**/gen_tuxtrail.py
+# The turn-0 containment gates. They enumerate, in plain text, every artifact and every content
+# pattern that is being kept out — i.e. a full map of the answer. Each one reaches the arm that
+# needs it via a read-only bind mount, never via the image.
+assert_*_arm.py
+**/assert_*_arm.py
+
+# --- 2. Secrets, at any depth (see the .env note higher up) ---
+**/.env
+**/*.env
+**/.env.*
+
+# --- 3. Vendored JS, at any depth. `node_modules/` alone matched only the ROOT copy, so
+#        .opencode/node_modules (36k files) was being baked into every image.
+node_modules/
+**/node_modules/
+
+# --- 4. SOLVERS AND ROUTE GENERATORS, BY CLASS ---------------------------------------------
+# A "route generator" is any tool that reads the level out of the game and EMITS a trajectory.
+# Handing one to an arm removes the search that the benchmark is measuring. Named rules for the
+# known ones already exist above; these are the class rules that also catch the next one.
+**/*_route.py
+**/*_solver.py
+**/*_solve.py
+scripts/*route*.py
+scripts/*solv*.py
+# The published-TAS replay drivers. They exist to re-run HappyLee's SMB movies and state the
+# movie ids and their frame counts in their own docstrings, so they are both a route source and
+# a frontier disclosure. sandbox/Dockerfile.smb.dockerignore already excluded them for the SMB
+# image; this makes that the default everywhere.
+scripts/replay_smb_*
+**/replay_smb_*
+scripts/reference_fceux_*
+**/reference_fceux_*
+
+# --- 5. RESULT / MOVIE TREES --------------------------------------------------------------
+# results/ is 471MB of finished trajectories from OTHER runs and OTHER titles (the SMB NTSC/PAL
+# TAS work, a prior SML best/). Nothing at run time reads it — every live compose service
+# mkdir/wipes results/speedrun itself on turn 0 and installs its seed from a READ-ONLY BIND
+# MOUNT — so shipping it only puts finished trajectories in front of an agent whose whole job
+# is to author one. CONSEQUENCE, stated plainly: an image built from this context no longer
+# contains ANY baked seed. A seeded arm MUST inject its seed at run time (bind mount, or the
+# documented `docker cp`); that is already how every current arm works.
+results/
+**/results/speedrun/
+movies/
+**/movies/
+**/*.bk2
+**/*.fm2
+**/*.fm3
+**/*.smv
+**/*.mp4
+**/*.mov
+**/*.avi
+# Converted-from-published-TAS fixtures (tests/fixtures/bizhawk/completion.json is a synchronized
+# prefix of BlackWinnerYoshi's 18,532-frame movie, and its README says so). The agent never runs
+# the repo's test suite.
+tests/
+**/tests/fixtures/
+
+# --- 6. Saved trajectories / seeds that sit loose in sandbox/ ------------------------------
+# Each of these IS a finished or reference run: the MK64 human + reference laps, the Civ
+# baseline/intro trajectories, and the SMB seed routes (which the smb/smb374 compose files
+# bind-mount read-only at run time anyway). sandbox/mk64_intro.json and
+# sandbox/pokemon_intro.json are deliberately NOT listed: they are scripted MENU-NAVIGATION
+# prefixes, not solutions, and scripts/n64_play.py + scripts/game_rules.py reference them.
+sandbox/*seed*.json
+**/*seed_route*.json
+sandbox/civ_*.json
+sandbox/mk64_*lap*.json
+sandbox/wario_ref_frames/
+
+# THE STK SCORER MUST NOT SHIP TO THE AGENT. scripts/stk_eval_service.py is the
+# service that turns a trajectory into a number, and its header documents the
+# state of the art in order to justify the design -- it states that the human
+# tape "re-drives only 369.88m of ~2614m" and that "the re-derived line dies at
+# pad 3". An agent that reads it learns the TRACK LENGTH and the PRIOR FRONTIER,
+# which is precisely what the sandbox exists to withhold. It also describes the
+# ranking (finish beats non-finish; max_distance as the gradient), i.e. exactly
+# what to optimise for and how the oracle will judge it.
+#
+# Excluding it costs nothing: the eval-service container is built from
+# sandbox/Dockerfile.stk-eval, a DIFFERENT build context, so scoring is
+# unaffected. Only the agent image loses it.
+#
+# The generic rules above already cover the rest of the STK surface --
+# `sandbox/seeds/` hides best_stk_2613m_aiseed.traj (whose FILENAME alone leaks
+# the target), `docker-compose*` hides docker-compose.stk.yml and
+# .stkscratch.yml (arm list, EVAL_BUDGET, SEED_MODE), and `results/` plus the
+# *_runs_archive/ rules hide prior outputs. This file was the one gap: no
+# existing pattern matches it (`scripts/*route*.py` and `scripts/*solv*.py` do
+# not), which is why it needs naming explicitly.
+
+# BELT AND BRACES over `**/2026-*.txt` above, which already handles this and is
+# documented there. Re-verified 2026-09-17: the transcript is STILL PRESENT in
+# the built image tas-sandbox-agent:latest (1.2 MB, 565 lines mentioning result
+# numbers) -- because that image predates the widening, NOT because the rule
+# fails. The lesson is about IMAGE STALENESS rather than pattern form: a denylist
+# fix only takes effect on the next build, so any arm launched from a
+# pre-existing image still carries whatever was leaking when it was built.
+# ALWAYS REBUILD after touching this file. The extra forms below cost nothing and
+# catch a transcript that lands outside sandbox/.
+sandbox/2026-*.txt
+sandbox/**/2026-*.txt
+*this-session-is-being-continued*
+**/*this-session-is-being-continued*
+
+# NOTE: this file exists ONLY to re-admit scripts/stk_eval_service.py, which the root
+# .dockerignore excludes so it never reaches the AGENT image. The eval-service builds from the
+# SAME context root, so the root denylist would otherwise break its own COPY. BuildKit uses
+# <dockerfile>.dockerignore in preference to .dockerignore when present, so this is a copy of the
+# root list minus those two lines. Keep it in sync when the root list changes.

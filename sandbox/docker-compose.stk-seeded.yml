@@ -1,0 +1,585 @@
+name: speedrun-bench   # one project for every game file, so they share one agentnet
+include:
+  - docker-compose.base.yml
+
+# SuperTuxKart (stk-ghosts) — one lap of Black Forest, five arms.
+#
+# OWN PROJECT NAME ON PURPOSE. Compose reconciles every service in a project, and several arms in
+# other files are LIVE with results/ that is not volume-backed, so a stray `up` on a shared file
+# destroys their best/ tapes. `name: stk` means compose physically cannot see them.
+#
+# TOPOLOGY: actor / orchestrator / eval-service, three containers per arm.
+# The actor holds no engine — the 14MB native binary and the 1.5GB stk-assets checkout are
+# bind-mounted into the EVAL-SERVICE only. That is what makes EVAL_BUDGET=0 a control rather than
+# a request, and it is why the actor is idle (`sleep infinity`) while the ORCHESTRATOR drives the
+# loop one turn at a time and holds EVAL_RESET_SECRET.
+#
+#   the privilege boundary is the CONTAINER boundary.
+#
+# An oracle running inside the actor is unprivileged and 429s alongside it. SuperTux put the secret
+# in the agent container and its ban is bypassable; pk_eval_service.py had no gate at all and one
+# arm burned 186 turns scoring nothing. Do not copy either.
+#
+# WHY THE EVAL-SERVICE HAS ITS OWN IMAGE (sandbox/Dockerfile.stk-eval)
+# sandbox/Dockerfile is python:3.10-slim = Debian bookworm = glibc 2.36, and this host is 2.35.
+# The stk-ghosts native binary needs glibc 2.38 + GLIBCXX_3.4.32 and dies at load before printing
+# anything, which reads like a corrupt binary rather than a base mismatch. ubuntu:24.04 (glibc
+# 2.39) plus libcurl4 runs it — verified end to end here: a drive of fixtures/human_seed_2.traj
+# returned finished=false, max_distance=40.70, reason=trajectory_exhausted.
+#
+# WHAT THE SCORE MEANS TODAY. tools/ghosts/episode.py:score_key ranks
+#     finished   -> (1, 1.0,  -total_time)
+#     unfinished -> (0, alive, max_distance)
+# and NOTHING HAS FINISHED A LAP YET. Early fleets live entirely in the `unfinished` branch, so the
+# leaderboard reads in METRES, not seconds. The adapter says so to the agent rather than implying a
+# lap time is reachable.
+# ==============================================================================================
+
+
+x-stk-actor: &stkactor
+  cpus: 2
+  mem_limit: 8g
+  image: tas-sandbox-agent:latest   # game-neutral alias; the "sml-" name is legacy, this image serves every game
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args:
+      STRIP_SEEDS: "0"   # seeded run: the seed must survive into the image
+  # host-gateway resolves to the DEFAULT bridge (172.17.0.1); these run on agentnet, gateway
+  # 172.18.0.1. Getting it wrong presents as "Cannot connect to API" with zero requests.
+  extra_hosts: ["host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"]
+  networks: [agentnet]
+  restart: "no"
+  # IDLE. The orchestrator execs scripts/opencode_tas_loop.sh one turn per invocation, so the
+  # agent-side code path is identical to every other game; only ownership of the loop moves.
+  # Copy, do not bind-mount, the seed into best/: a mounted file cannot be replaced, which blocks
+  # promotion of a better tape. Every seeded arm gets the seed this same way.
+  command: ["bash", "-lc", "mkdir -p results/speedrun/best && cp /seed/seed.tape results/speedrun/best/stk_seed_ainative_168s.tape && exec sleep infinity"]
+
+x-stk-actor-env: &stkactorenv
+  # Seed facts for the SEEDED condition only. They used to be the adapter default, which ships in
+  # the actor image and so leaked to the from-scratch fleet.
+  GAME_EXEC_HINTS: >-
+    A lap HAS been finished: the seed tape in results/speedrun/best/ scores finished=1, 
+    total_time=168.029526, max_distance=2613.500244. That is your bar and your starting point — edit 
+    it rather than authoring from scratch. Its structure, measured: 5708 steer-left and 4358 
+    steer-right events, 19 fire, and exactly ONE each of brake, nitro and drift, with accel set at 
+    ticks 0-1 and sticky-held flat out. So there is no throttle to find; NITRO AND DRIFT ARE UNSPENT 
+    and are the obvious headroom. The line is tight: deleting a single steering event drops the run 
+    from 2613.50m (finished) to 2423.17m (unfinished). You are scored on total_time once a lap 
+    finishes, and on max_distance (METRES, higher is better) until one does. Read the failure: 
+    \`reason\` and \`last_gain_time\` tell you WHERE progress stopped, which is worth more than the 
+    distance itself. Submit exactly ONE trajectory per turn; the budget is enforced by the service 
+    and you cannot reset it.
+  HTTP_PROXY: http://proxy:8888
+  HTTPS_PROXY: http://proxy:8888
+  http_proxy: http://proxy:8888
+  https_proxy: http://proxy:8888
+  GAME: supertuxkart
+  BEST_PREFIX: stk
+  STK_TRACK: black_forest
+  STK_KART: tux
+  SWEEPS: "1"
+  PLAN: "1"
+  REPLAN_EVERY: "5"
+  ORACLE_FEEDBACK: "1"
+  NO_EMULATOR: "1"
+  NO_SEED: "0"          # seeded: tell the agent it starts from a gold trajectory
+  TURN_TIMEOUT: "1800"
+  EXPORT_DIR: /export
+  # Advisory only; the real cap is EVAL_BUDGET on the service, which the actor cannot reach.
+  EVAL_BUDGET: "0"
+
+  # ORACLE_KEEP_CAND IS A DESTINATION PATH, NOT A BOOLEAN. opencode_tas_loop.sh does
+  #     if [ -n "$ORACLE_KEEP_CAND" ] && [ -f "$CAND" ]; then cp -f "$CAND" "$ORACLE_KEEP_CAND"; fi
+  #     rm -f "$CAND"
+  # so "1" copies the candidate to a file literally named `1` and the real path is still deleted.
+  # It also has to be set on the AGENT, because that is where the loop runs -- setting it on the
+  # orchestrator alone is inert. Both mistakes were live here: the orchestrator's oracle then read
+  # /work/results/speedrun/candidate.traj AFTER the loop had removed it and logged
+  # "nothing to score (no candidate written this turn)" for five consecutive turns while the agent
+  # was in fact writing well-formed trajectories every turn. Observed 2026-09-17.
+  ORACLE_KEEP_CAND: /work/results/speedrun/candidate_for_oracle.traj
+x-stk-orch: &stkorch
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile
+    args: { WITH_DOCKER_CLI: "1" }
+  volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+  command: ["bash", "-lc", "scripts/tas_orchestrator.sh"]
+  networks: [agentnet]
+  restart: "no"
+
+x-stk-orch-env: &stkorchenv
+  GAME: supertuxkart
+  SWEEPS: ${STK_SWEEPS:-200}
+  EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+  # continue, NOT the default `human`: there is no seed FILE to preserve and the default mode's
+  # `find results/speedrun -name '*.json' -delete` would run for nothing.
+  SEED_MODE: human      # keeps *human* / *seed* trajectories, drops the rest
+  VISION_WAIT: "0"
+  # SCORE FROM OUT HERE. Without this the oracle runs INSIDE the agent container, which by
+  # design holds no EVAL_RESET_SECRET -- so the orchestrator's OWN scoring is metered too, hits
+  # the EVAL_BUDGET=0 ban, and every turn comes back
+  #   "ORACLE(stk): REJECTED -- scoring is DISABLED for the agent this turn"
+  # with best=999999f and nothing ever promoted. That is the pk_eval_service failure verbatim:
+  # 186 turns scoring absolutely nothing. Observed here on turn 2, 2026-09-17.
+  #
+  # With it set, tas_orchestrator.sh reads the candidate out of the agent and POSTs it to /score
+  # carrying X-Eval-Secret, so the ORACLE is privileged and the AGENT still is not. The agent
+  # never gets the key, so EVAL_BUDGET=0 remains a control rather than a request.
+  # WITHOUT THIS THE AGENT NEVER LEARNS ANYTHING. tas_orchestrator.sh guards BOTH delivery
+  # points on it -- `if [ -n "$ORACLE_FEEDBACK_FILE" ] ... docker exec ... cat > "$FILE"` -- so an
+  # unset value means the verdict is computed, logged to the orchestrator console, and silently
+  # never handed to the agent. opencode_tas_loop.sh reads the same path on the other side
+  # (line 218) and finds nothing.
+  #
+  # MEASURED HERE, 2026-09-17: with it unset the agent edited completely blind and regressed
+  # monotonically from the seed -- max_distance 2613.50 (seed) -> 1865.76 -> 1578.99 -> 230.46 ->
+  # 230.46 -- stacking three speculative edits at once and predicting 169.7s while actually
+  # destroying the lap. It never reverted because it was never told anything had failed. The only
+  # message it saw was its OWN 429 from the banned scorer, which says nothing about quality.
+  # The goal NOUN in the verdict sentence. Unset it defaults to BADGE_1, which is Pokemon's and
+  # was being shown to the kart agent verbatim: "REJECTED -- did NOT reach BADGE_1 ()".
+  ORACLE_GOAL_LABEL: "a finished lap"
+  ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
+  ORACLE_BY_PATH: "1"
+  # Read the KEPT copy: the loop rm -f's $CAND at end of turn, so the live path is gone by
+  # the time the orchestrator looks.
+  ORACLE_CAND_PATH: /work/results/speedrun/candidate_for_oracle.traj
+  ORACLE_SRC_POST: "1"
+  # The loop deletes results/speedrun/candidate.traj at end of turn unless this is set, so the
+  # oracle would otherwise read the path AFTER the delete and report "nothing to score".
+  # TIME IS THE OBJECTIVE, AND THE BAR MUST BE IN TIME. This was "2613" -- the seed's DISTANCE in
+  # metres -- in a field the agent is shown as `best=2613f`. The adapter already promotes on time
+  # alone (O_GF is total_time and is emitted ONLY on a finish; O_MP/max_distance is explicitly
+  # feedback-only), so this bar was the single place metres entered the objective, and it aimed
+  # the agent at the wrong quantity.
+  #
+  # IT MATTERED. Told to beat 2613, the agent drove PAST a full lap without completing one:
+  # max_distance 2653.22 / 2647.78 / 2620.04 against a ~2614m lap, every one with laps_done=0
+  # (LinearWorld::getFinishedLapsOfKart -- the engine's own count, so those laps really were not
+  # finished). Distance is maximisable without finishing, by going off-route or doubling back, so
+  # a distance bar rewards precisely what the task excludes. Observed 2026-09-17.
+  #
+  # The seed finishes in 168.03s, so that is the bar, and lower is better as everywhere else.
+  BEST_FRAME_INIT: "168"
+
+x-stk-eval: &stkeval
+  build:
+    context: ..
+    dockerfile: sandbox/Dockerfile.stk-eval
+  command: ["bash", "-lc", "python3 /work/scripts/stk_eval_service.py --port 8940"]
+  networks: [agentnet]
+  restart: "no"
+  volumes:
+    # The engine lives HERE and nowhere the actor can reach. Read-only: the drive writes its
+    # trajectory and result into a tempdir, never into the checkout.
+    - ${STK_DIR:?set STK_DIR in sandbox/.env}:/src:ro
+  environment: &stkevalenv
+    STK_REPO: /src
+    STK_TIMEOUT: "900"
+    HOME: /tmp
+    # 0 = BANNED for the actor. The orchestrator bypasses it with X-Eval-Secret.
+    EVAL_BUDGET: ${STK_EVAL_BUDGET:-0}
+    EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+
+services:
+  # ---------------- GPT-5.6-sol ----------------
+  stk-sol:
+    <<: *stkactor
+    container_name: sb-stk-sol
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-sol,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-sol,host.docker.internal
+      AGENT: stk-tas-gpt-sol
+      SWEEP_API_BASE: https://api.openai.com/v1
+      SWEEP_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-sol:8940
+      LOG: /tmp/stk-sol/loop.log
+      TMPDIR: /tmp/stk-sol
+      XDG_DATA_HOME: /root/.state/stk-sol/data
+    volumes:
+      - "../out/exported/stk-sol:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # SEED: same read-only tape glm53 used. results/ is excluded from the build
+      # context by design (.dockerignore section 5), so a seed placed there is never
+      # COPYed in -- it must be injected at run time. Mounted straight into best/
+      # because this actor is `sleep infinity`; the orchestrator drives it by docker
+      # exec, so there is no command string to hang a `cp` on. :ro also stops the
+      # turn-0 reset deleting it (the name matching *seed* already would).
+      # finished=1, total_time=168.029526, max_distance=2613.500244.
+      # NOT :ro. Read-only protected the seed from the turn-0 reset, but stk-sol's
+      # workflow is delete-then-rewrite: it called FileSystem.remove on the tape, got
+      # "Busy" from the read-only bind and died on an AssertionError -- 60 turns, ZERO
+      # scored laps, while grok/opus/kimi (which copy-and-edit) logged 0 such errors.
+      # The reset already exempts *seed* by name (tas_orchestrator.sh:62), so :ro was
+      # redundant protection that cost a whole arm.
+      # NO SEED MOUNT FOR THIS ARM -- the seed is docker-cp'd in as a plain file.
+      # A bind-mounted FILE is a mountpoint: `rm` returns "Device or resource busy"
+      # whether or not :ro is set, so the agent cannot replace it. stk-sol's workflow
+      # is delete-then-rewrite; it hit exactly that, died on AssertionError, and
+      # produced ZERO scored laps in 60 turns. grok/opus/kimi copy-and-edit, so they
+      # logged 0 such errors and the defect stayed invisible. Copied in as a plain
+      # file it is deletable, and tas_orchestrator.sh:62 already exempts *seed* from
+      # the turn-0 reset by name -- so the mount was buying nothing to begin with.
+  orchestrator-stk-sol:
+    <<: *stkorch
+    depends_on: [eval-service-stk-sol, stk-sol]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-sol
+      EVAL_SERVICE_URL: http://eval-service-stk-sol:8940
+      STK_EVAL_URL: http://eval-service-stk-sol:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-sol,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-sol,host.docker.internal
+  eval-service-stk-sol:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-sol
+
+  # ---------------- Grok 4.6 ----------------
+  stk-grok:
+    <<: *stkactor
+    container_name: sb-stk-grok
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-grok,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-grok,host.docker.internal
+      AGENT: stk-tas-grok
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      # Required BY NAME: the opencode openrouter provider reads {env:OPENROUTER_API_KEY} and
+      # never looks at SWEEP_API_KEY. Omit it and every turn dies with "No cookie auth
+      # credentials found" while the loop reports evals=0 and runs to completion.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-grok:8940
+      LOG: /tmp/stk-grok/loop.log
+      TMPDIR: /tmp/stk-grok
+      XDG_DATA_HOME: /root/.state/stk-grok/data
+    volumes:
+      - "../out/exported/stk-grok:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # SEED: same read-only tape glm53 used. results/ is excluded from the build
+      # context by design (.dockerignore section 5), so a seed placed there is never
+      # COPYed in -- it must be injected at run time. Mounted straight into best/
+      # because this actor is `sleep infinity`; the orchestrator drives it by docker
+      # exec, so there is no command string to hang a `cp` on. :ro also stops the
+      # turn-0 reset deleting it (the name matching *seed* already would).
+      # finished=1, total_time=168.029526, max_distance=2613.500244.
+  orchestrator-stk-grok:
+    <<: *stkorch
+    depends_on: [eval-service-stk-grok, stk-grok]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-grok
+      EVAL_SERVICE_URL: http://eval-service-stk-grok:8940
+      STK_EVAL_URL: http://eval-service-stk-grok:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-grok,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-grok,host.docker.internal
+  eval-service-stk-grok:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-grok
+
+  # ---------------- Claude Opus 5 ----------------
+  stk-opus:
+    <<: *stkactor
+    container_name: sb-stk-opus
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-opus,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-opus,host.docker.internal
+      AGENT: stk-tas-opus
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-opus:8940
+      LOG: /tmp/stk-opus/loop.log
+      TMPDIR: /tmp/stk-opus
+      XDG_DATA_HOME: /root/.state/stk-opus/data
+    volumes:
+      - "../out/exported/stk-opus:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # SEED: same read-only tape glm53 used. results/ is excluded from the build
+      # context by design (.dockerignore section 5), so a seed placed there is never
+      # COPYed in -- it must be injected at run time. Mounted straight into best/
+      # because this actor is `sleep infinity`; the orchestrator drives it by docker
+      # exec, so there is no command string to hang a `cp` on. :ro also stops the
+      # turn-0 reset deleting it (the name matching *seed* already would).
+      # finished=1, total_time=168.029526, max_distance=2613.500244.
+  orchestrator-stk-opus:
+    <<: *stkorch
+    depends_on: [eval-service-stk-opus, stk-opus]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-opus
+      EVAL_SERVICE_URL: http://eval-service-stk-opus:8940
+      STK_EVAL_URL: http://eval-service-stk-opus:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-opus,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-opus,host.docker.internal
+  eval-service-stk-opus:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-opus
+
+  # ---------------- Kimi-K3 ----------------
+  stk-kimi:
+    <<: *stkactor
+    container_name: sb-stk-kimi
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-kimi,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-kimi,host.docker.internal
+      AGENT: stk-tas-kimi-k3
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-kimi:8940
+      LOG: /tmp/stk-kimi/loop.log
+      TMPDIR: /tmp/stk-kimi
+      XDG_DATA_HOME: /root/.state/stk-kimi/data
+    volumes:
+      - "../out/exported/stk-kimi:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # SEED: same read-only tape glm53 used. results/ is excluded from the build
+      # context by design (.dockerignore section 5), so a seed placed there is never
+      # COPYed in -- it must be injected at run time. Mounted straight into best/
+      # because this actor is `sleep infinity`; the orchestrator drives it by docker
+      # exec, so there is no command string to hang a `cp` on. :ro also stops the
+      # turn-0 reset deleting it (the name matching *seed* already would).
+      # finished=1, total_time=168.029526, max_distance=2613.500244.
+  orchestrator-stk-kimi:
+    <<: *stkorch
+    depends_on: [eval-service-stk-kimi, stk-kimi]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-kimi
+      EVAL_SERVICE_URL: http://eval-service-stk-kimi:8940
+      STK_EVAL_URL: http://eval-service-stk-kimi:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-kimi,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-kimi,host.docker.internal
+  eval-service-stk-kimi:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-kimi
+
+  # ---------------- GLM 5.3 ----------------
+  stk-glm53:
+    <<: *stkactor
+    container_name: sb-stk-glm53
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-glm53,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-glm53,host.docker.internal
+      AGENT: stk-tas-glm53
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-glm53:8940
+      LOG: /tmp/stk-glm53/loop.log
+      TMPDIR: /tmp/stk-glm53
+      XDG_DATA_HOME: /root/.state/stk-glm53/data
+    volumes:
+      - "../out/exported/stk-glm53:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # SEED: injected at RUN TIME, read-only, per .dockerignore section 5 --
+      # "an image built from this context no longer contains ANY baked seed;
+      # a seeded arm MUST inject its seed at run time". results/ is excluded
+      # from the build context, so a seed placed there is never COPYed in --
+      # which is why best/ was empty while SEED_MODE=human claimed otherwise.
+      #
+      # Mounted straight into best/ rather than via /seed/ + a `cp`, because
+      # this actor is `sleep infinity` (the ORCHESTRATOR drives it by docker
+      # exec) so there is no command string to hang a copy on. :ro also makes
+      # the turn-0 reset unable to delete it -- see the find below.
+      #
+      # THE ONLY ARTIFACT THAT FINISHES A LAP: finished=1, total_time=168.029526,
+      # max_distance=2613.500244, verified through the eval-service over HTTP.
+      # A compiled history.dat TAPE, not agent DSL -- no DSL has ever finished.
+  orchestrator-stk-glm53:
+    <<: *stkorch
+    depends_on: [eval-service-stk-glm53, stk-glm53]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-glm53
+      EVAL_SERVICE_URL: http://eval-service-stk-glm53:8940
+      STK_EVAL_URL: http://eval-service-stk-glm53:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-glm53,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-glm53,host.docker.internal
+  eval-service-stk-glm53:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-glm53
+
+  stk-glm52:
+    <<: *stkactor
+    container_name: sb-stk-glm52
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-glm52,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-glm52,host.docker.internal
+      AGENT: stk-tas-glm52
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-glm52:8940
+      LOG: /tmp/stk-glm52/loop.log
+      TMPDIR: /tmp/stk-glm52
+      XDG_DATA_HOME: /root/.state/stk-glm52/data
+    volumes:
+      - "../out/exported/stk-glm52:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # NO SEED MOUNT -- the tape is docker-cp'd in as a plain file. A bind-mounted FILE
+      # is a mountpoint: `rm` returns "Device or resource busy" with or without :ro, so an
+      # agent whose workflow is delete-then-rewrite cannot replace it. That cost stk-sol a
+      # full 60-turn run (0 scored laps) before it was found; see dbfb32f.
+  orchestrator-stk-glm52:
+    <<: *stkorch
+    depends_on: [eval-service-stk-glm52, stk-glm52]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-glm52
+      EVAL_SERVICE_URL: http://eval-service-stk-glm52:8940
+      STK_EVAL_URL: http://eval-service-stk-glm52:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-glm52,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-glm52,host.docker.internal
+  eval-service-stk-glm52:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-glm52
+
+  stk-deepseek:
+    <<: *stkactor
+    container_name: sb-stk-deepseek
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-deepseek,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-deepseek,host.docker.internal
+      AGENT: stk-tas-deepseek
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-deepseek:8940
+      LOG: /tmp/stk-deepseek/loop.log
+      TMPDIR: /tmp/stk-deepseek
+      XDG_DATA_HOME: /root/.state/stk-deepseek/data
+    volumes:
+      - "../out/exported/stk-deepseek:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # NO SEED MOUNT -- the tape is docker-cp'd in as a plain file. A bind-mounted FILE
+      # is a mountpoint: `rm` returns "Device or resource busy" with or without :ro, so an
+      # agent whose workflow is delete-then-rewrite cannot replace it. That cost stk-sol a
+      # full 60-turn run (0 scored laps) before it was found; see dbfb32f.
+  orchestrator-stk-deepseek:
+    <<: *stkorch
+    depends_on: [eval-service-stk-deepseek, stk-deepseek]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-deepseek
+      EVAL_SERVICE_URL: http://eval-service-stk-deepseek:8940
+      STK_EVAL_URL: http://eval-service-stk-deepseek:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-deepseek,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-deepseek,host.docker.internal
+  eval-service-stk-deepseek:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-deepseek
+
+  stk-dspro:
+    <<: *stkactor
+    container_name: sb-stk-dspro
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-dspro,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-dspro,host.docker.internal
+      AGENT: stk-tas-dspro
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-dspro:8940
+      LOG: /tmp/stk-dspro/loop.log
+      TMPDIR: /tmp/stk-dspro
+      XDG_DATA_HOME: /root/.state/stk-dspro/data
+    volumes:
+      - "../out/exported/stk-dspro:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # NO SEED MOUNT -- the tape is docker-cp'd in as a plain file. A bind-mounted FILE
+      # is a mountpoint: `rm` returns "Device or resource busy" with or without :ro, so an
+      # agent whose workflow is delete-then-rewrite cannot replace it. That cost stk-sol a
+      # full 60-turn run (0 scored laps) before it was found; see dbfb32f.
+  orchestrator-stk-dspro:
+    <<: *stkorch
+    depends_on: [eval-service-stk-dspro, stk-dspro]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-dspro
+      EVAL_SERVICE_URL: http://eval-service-stk-dspro:8940
+      STK_EVAL_URL: http://eval-service-stk-dspro:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-dspro,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-dspro,host.docker.internal
+  eval-service-stk-dspro:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-dspro
+
+  stk-gemini:
+    <<: *stkactor
+    container_name: sb-stk-gemini
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-gemini,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-gemini,host.docker.internal
+      AGENT: stk-tas-gemini
+      SWEEP_API_BASE: http://host.docker.internal:8790/v1
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-gemini:8940
+      LOG: /tmp/stk-gemini/loop.log
+      TMPDIR: /tmp/stk-gemini
+      XDG_DATA_HOME: /root/.state/stk-gemini/data
+    volumes:
+      - "../out/exported/stk-gemini:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # NO SEED MOUNT -- the tape is docker-cp'd in as a plain file. A bind-mounted FILE
+      # is a mountpoint: `rm` returns "Device or resource busy" with or without :ro, so an
+      # agent whose workflow is delete-then-rewrite cannot replace it. That cost stk-sol a
+      # full 60-turn run (0 scored laps) before it was found; see dbfb32f.
+  orchestrator-stk-gemini:
+    <<: *stkorch
+    depends_on: [eval-service-stk-gemini, stk-gemini]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-gemini
+      EVAL_SERVICE_URL: http://eval-service-stk-gemini:8940
+      STK_EVAL_URL: http://eval-service-stk-gemini:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-gemini,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-gemini,host.docker.internal
+  eval-service-stk-gemini:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-gemini
+
+  stk-inkling:
+    <<: *stkactor
+    container_name: sb-stk-inkling
+    environment:
+      <<: *stkactorenv
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-inkling,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-inkling,host.docker.internal
+      AGENT: stk-tas-inkling
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      STK_EVAL_URL: http://eval-service-stk-inkling:8940
+      LOG: /tmp/stk-inkling/loop.log
+      TMPDIR: /tmp/stk-inkling
+      XDG_DATA_HOME: /root/.state/stk-inkling/data
+    volumes:
+      - "../out/exported/stk-inkling:/export"
+      - "../seeds/stk/stk_seed_ainative_168s.tape:/seed/seed.tape:ro"
+      # NO SEED MOUNT -- the tape is docker-cp'd in as a plain file. A bind-mounted FILE
+      # is a mountpoint: `rm` returns "Device or resource busy" with or without :ro, so an
+      # agent whose workflow is delete-then-rewrite cannot replace it. That cost stk-sol a
+      # full 60-turn run (0 scored laps) before it was found; see dbfb32f.
+  orchestrator-stk-inkling:
+    <<: *stkorch
+    depends_on: [eval-service-stk-inkling, stk-inkling]
+    environment:
+      <<: *stkorchenv
+      AGENT_CONTAINER: sb-stk-inkling
+      EVAL_SERVICE_URL: http://eval-service-stk-inkling:8940
+      STK_EVAL_URL: http://eval-service-stk-inkling:8940
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-stk-inkling,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-stk-inkling,host.docker.internal
+  eval-service-stk-inkling:
+    <<: *stkeval
+    container_name: sb-eval-service-stk-inkling

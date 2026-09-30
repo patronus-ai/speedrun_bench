@@ -1,0 +1,1194 @@
+name: speedrun-bench   # one project for every game file, so they share one agentnet
+include:
+  - docker-compose.base.yml
+
+# Tuxemon SEEDED optimisation loop -- one arm.
+#
+# A SEPARATE FILE, ON PURPOSE. The from-scratch fleet (docker-compose.tuxemon.yml, 33 services)
+# is live; `compose up` on that file recreates agent containers and would wipe 200 turns of work.
+# Nothing here is shared with it except the external network, so the worst case is that this arm
+# fails to start.
+#
+# WHAT THE SEED IS. tux_tas/seeds/best_tuxemon_105400_human.json, converted from the gymwalk
+# driver tape and verified through tux_score.py itself: reached_target=True, maps_reached=11,
+# final_map=spyder_leather_gym.tmx, agent_steps=1366, engine_steps=105400. So this arm does NOT
+# have to find the route -- it has to make it shorter. There is real headroom: the baseline loses
+# the mandatory Billie fight five times and re-walks the whole route each time, so only ~26k of
+# its ~105k steps are forward progress.
+#
+# THE THREE TUX_* VARS BELOW ARE LOad-BEARING. A driver-derived seed only replays with combat NOT
+# auto-resolved (auto_combat=True makes the env discard the tape's battle inputs and break out of
+# its busy loop early, shifting every later input off its frame) and with the same intro replayed
+# so the handoff position matches. Measured: the identical tape scores maps_reached=5 without
+# them and 11 with them. Omit one and turn 1 rejects the seed as a bad tape -- which looks like a
+# broken seed rather than a missing flag. They are set on the EVAL-SERVICE because that is where
+# scoring actually happens for this topology (tux_eval_service.py), not in the local scorer branch.
+
+services:
+  eval-service-tuxseed-kimi:
+    container_name: sb-eval-service-tuxseed-kimi
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-kimi:/work/candidates:ro
+
+  tuxseed-kimi-agent:
+    container_name: sb-tuxseed-kimi-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-kimi]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-kimi
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-kimi
+      TUX_EVAL_URL: http://eval-service-tuxseed-kimi:8930
+      AGENT: tuxemon-seed-tas-kimi-k3
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-kimi:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-kimi:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-kimi, tuxseed-kimi-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-kimi-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-kimi:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---- GLM-5.3 control arm: same seed, same topology, different model. If this arm also
+# fails every candidate, the limit is the tick-exact tape, not the model.
+
+  eval-service-tuxseed-glm53:
+    container_name: sb-eval-service-tuxseed-glm53
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-glm53:/work/candidates:ro
+
+  tuxseed-glm53-agent:
+    container_name: sb-tuxseed-glm53-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-glm53]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-glm53
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-glm53
+      TUX_EVAL_URL: http://eval-service-tuxseed-glm53:8930
+      AGENT: tuxemon-seed-tas-glm53
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-glm53:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-glm53:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-glm53, tuxseed-glm53-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-glm53-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-glm53:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: opus ----------------
+
+  eval-service-tuxseed-opus:
+    container_name: sb-eval-service-tuxseed-opus
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-opus:/work/candidates:ro
+
+  tuxseed-opus-agent:
+    container_name: sb-tuxseed-opus-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-opus]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-opus
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-opus
+      TUX_EVAL_URL: http://eval-service-tuxseed-opus:8930
+      AGENT: tuxemon-seed-tas-opus
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-opus:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-opus:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-opus, tuxseed-opus-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-opus-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-opus:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: grok ----------------
+
+  eval-service-tuxseed-grok:
+    container_name: sb-eval-service-tuxseed-grok
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-grok:/work/candidates:ro
+
+  tuxseed-grok-agent:
+    container_name: sb-tuxseed-grok-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-grok]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-grok
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-grok
+      TUX_EVAL_URL: http://eval-service-tuxseed-grok:8930
+      AGENT: tuxemon-seed-tas-grok
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-grok:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-grok:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-grok, tuxseed-grok-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-grok-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-grok:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: sol ----------------
+
+  eval-service-tuxseed-sol:
+    container_name: sb-eval-service-tuxseed-sol
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-sol:/work/candidates:ro
+
+  tuxseed-sol-agent:
+    container_name: sb-tuxseed-sol-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-sol]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-sol
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-sol
+      TUX_EVAL_URL: http://eval-service-tuxseed-sol:8930
+      AGENT: tuxemon-seed-tas-sol
+      SWEEP_API_BASE: https://api.openai.com/v1
+      SWEEP_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-sol:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-sol:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-sol, tuxseed-sol-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-sol-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-sol:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: deepseek ----------------
+
+  eval-service-tuxseed-deepseek:
+    container_name: sb-eval-service-tuxseed-deepseek
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-deepseek:/work/candidates:ro
+
+  tuxseed-deepseek-agent:
+    container_name: sb-tuxseed-deepseek-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-deepseek]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-deepseek
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-deepseek
+      TUX_EVAL_URL: http://eval-service-tuxseed-deepseek:8930
+      AGENT: tuxemon-seed-tas-deepseek-v4
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-deepseek:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-deepseek:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-deepseek, tuxseed-deepseek-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-deepseek-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-deepseek:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: dspro ----------------
+
+  eval-service-tuxseed-dspro:
+    container_name: sb-eval-service-tuxseed-dspro
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-dspro:/work/candidates:ro
+
+  tuxseed-dspro-agent:
+    container_name: sb-tuxseed-dspro-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-dspro]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-dspro
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-dspro
+      TUX_EVAL_URL: http://eval-service-tuxseed-dspro:8930
+      AGENT: tuxemon-seed-tas-deepseek-pro
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-dspro:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-dspro:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-dspro, tuxseed-dspro-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-dspro-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-dspro:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: glm ----------------
+
+  eval-service-tuxseed-glm:
+    container_name: sb-eval-service-tuxseed-glm
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-glm:/work/candidates:ro
+
+  tuxseed-glm-agent:
+    container_name: sb-tuxseed-glm-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-glm]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-glm
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-glm
+      TUX_EVAL_URL: http://eval-service-tuxseed-glm:8930
+      AGENT: tuxemon-seed-tas-glm
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-glm:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-glm:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-glm, tuxseed-glm-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-glm-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-glm:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: inkling ----------------
+
+  eval-service-tuxseed-inkling:
+    container_name: sb-eval-service-tuxseed-inkling
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-inkling:/work/candidates:ro
+
+  tuxseed-inkling-agent:
+    container_name: sb-tuxseed-inkling-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-inkling]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-inkling
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-inkling
+      TUX_EVAL_URL: http://eval-service-tuxseed-inkling:8930
+      AGENT: tuxemon-seed-tas-inkling-small
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-inkling:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-inkling:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-inkling, tuxseed-inkling-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-inkling-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-inkling:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: inklingfull ----------------
+
+  eval-service-tuxseed-inklingfull:
+    container_name: sb-eval-service-tuxseed-inklingfull
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-inklingfull:/work/candidates:ro
+
+  tuxseed-inklingfull-agent:
+    container_name: sb-tuxseed-inklingfull-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-inklingfull]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-inklingfull
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-inklingfull
+      TUX_EVAL_URL: http://eval-service-tuxseed-inklingfull:8930
+      AGENT: tuxemon-seed-tas-inkling-full
+      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
+      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-inklingfull:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-inklingfull:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-inklingfull, tuxseed-inklingfull-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-inklingfull-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-inklingfull:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: gemini ----------------
+
+  eval-service-tuxseed-gemini:
+    container_name: sb-eval-service-tuxseed-gemini
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-gemini:/work/candidates:ro
+
+  tuxseed-gemini-agent:
+    container_name: sb-tuxseed-gemini-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-gemini]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-gemini,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-gemini,host.docker.internal
+      TUX_EVAL_URL: http://eval-service-tuxseed-gemini:8930
+      AGENT: tuxemon-seed-tas-gemini
+      SWEEP_API_BASE: http://host.docker.internal:8790/v1
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-gemini:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-gemini:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-gemini, tuxseed-gemini-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-gemini-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-gemini:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+
+# ---------------- SEEDED: fable (claude-fable-5.1) ----------------
+
+  eval-service-tuxseed-fable:
+    container_name: sb-eval-service-tuxseed-fable
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_TUXEMON: "1" }
+    command: ["bash","-lc","PYTHONPATH=/work .venv/bin/python scripts/tux_eval_service.py"]
+    networks: [agentnet]
+    environment:
+      TUX_EVAL_PORT: "8930"
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      TUX_PY: ${TUX_DIR}/.venv312/bin/python
+      TUX_DIR: ${TUX_DIR}
+      TUX_TARGET: spyder_leather_gym.tmx
+      TUX_MAX_STEPS: "200000"
+      TUX_CAND_ROOT: /work/candidates
+      # The seed's replay conditions -- see header.
+      TUX_NO_AUTO_COMBAT: "1"
+      TUX_INTRO_ROUTE: gymwalk
+      TUX_HANDOFF_STEP: "2291"
+    volumes:
+      - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
+      # .venv312 is a symlink chain into the uv-managed standalone CPython 3.12.13; the bind
+      # mount carries the symlink, not the interpreter, so the runtime must be mounted too.
+      - ../out/exported/tuxseed-fable:/work/candidates:ro
+
+  tuxseed-fable-agent:
+    container_name: sb-tuxseed-fable-agent
+    cpus: 2
+    mem_limit: 8g
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
+      # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
+      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-fable]
+    # agentnet's gateway. NOT host-gateway, which resolves to the default bridge 172.17.0.1 and
+    # is unreachable from this network ("Cannot connect to API" with zero requests at the host).
+    extra_hosts:
+      - "host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"
+    environment:
+      GAME: tuxemon
+      CAND: /work/exported/candidate.json
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      EVAL_BUDGET: ${TUX_EVAL_BUDGET:-0}
+      NO_EMULATOR: "1"
+      ORACLE_FEEDBACK: "1"
+      MEASURE_BEST: "0"
+      # THE SEEDED HALF OF THE EXPERIMENT: 0, not 1. The from-scratch fleet runs NO_SEED=1.
+      NO_SEED: "0"
+      PLAN: "1"
+      REPLAN_EVERY: ${TUX_REPLAN_EVERY:-0}
+      TURN_TIMEOUT: ${TURN_TIMEOUT:-0}
+      HTTP_PROXY: http://proxy:8888
+      HTTPS_PROXY: http://proxy:8888
+      http_proxy: http://proxy:8888
+      https_proxy: http://proxy:8888
+      NO_PROXY: localhost,127.0.0.1,proxy,eval-service-tuxseed-fable,host.docker.internal
+      no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-fable,host.docker.internal
+      TUX_EVAL_URL: http://eval-service-tuxseed-fable:8930
+      AGENT: tuxemon-seed-tas-fable
+      SWEEP_API_BASE: http://host.docker.internal:8790/v1
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+    volumes: ["../out/exported/tuxseed-fable:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
+
+  orchestrator-tuxseed-fable:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile
+      args: { WITH_DOCKER_CLI: "1" }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    command: ["bash","-lc","scripts/tas_orchestrator.sh"]
+    networks: [agentnet]
+    depends_on: [eval-service-tuxseed-fable, tuxseed-fable-agent]
+    environment:
+      AGENT_CONTAINER: sb-tuxseed-fable-agent
+      EVAL_SERVICE_URL: http://eval-service-tuxseed-fable:8930
+      EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
+      SWEEPS: ${TUXSEED_SWEEPS:-200}
+      # human, not scratch: scratch DELETES the seed before turn 1. The reset keeps files with
+      # "human" OR "seed" in the name. The seed is NOT a human run (it is the scripted gymwalk
+      # driver), so it is named *seed*, not *human*.
+      SEED_MODE: human
+      VISION_WAIT: "0"
+      TUX_ORACLE_BY_PATH: "1"
+      TUX_CAND_PATH: /work/candidates/candidate_for_oracle.json
+      # Agent-side path, set explicitly: left unset the orchestrator derives it from TUX_CAND_PATH
+      # and hands the agent /work/candidates/..., which does not exist in the agent container.
+      ORACLE_KEEP_CAND: /work/exported/candidate_for_oracle.json

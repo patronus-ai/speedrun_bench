@@ -92,7 +92,7 @@ The seeds are not human play:
 |---|---|
 | `seeds/supertux/welcome_seed_9498f.json` | an LLM (GPT-5.6-sol) playthrough, converted to a tape |
 | `seeds/tuxemon/best_tuxemon_seed_105400f.json` | a scripted driver's tape, clipped to the scoring window |
-| `seeds/stk/stk_seed_ainative_168s.tape` | a capture of SuperTuxKart's built-in AI driver |
+| `seeds/stk/stk_seed_ainative_168s.tape` | bot driver |
 
 ## Outputs
 

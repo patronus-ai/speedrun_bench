@@ -176,16 +176,18 @@ class Handler(BaseHTTPRequestHandler):
             # write a tape and ask for it by name, which is the ban with extra steps.
             if not privileged:
                 return self._send(403, {"error": "path scoring requires X-Eval-Secret"})
-            p = Path(path)
             # Confine to the mounted candidate root so a stray path cannot read the filesystem.
-            try:
-                p.resolve().relative_to(Path(CAND_ROOT).resolve())
-            except Exception:
+            # Resolve ONCE (symlinks included) and do every check and read on that resolved path,
+            # so the file we confine is the file we open.
+            root = os.path.realpath(CAND_ROOT)
+            p = os.path.realpath(os.path.join(root, str(path)))
+            if not p.startswith(root + os.sep):
                 return self._send(400, {"error": f"path must live under {CAND_ROOT}"})
-            if not p.is_file():
+            if not os.path.isfile(p):
                 return self._send(404, {"error": f"no candidate at {path}"})
             try:
-                tape = json.loads(p.read_text())
+                with open(p) as f:
+                    tape = json.load(f)
             except Exception as e:
                 return self._send(400, {"error": f"unreadable candidate {path}: {e!r}"})
         if tape is None:

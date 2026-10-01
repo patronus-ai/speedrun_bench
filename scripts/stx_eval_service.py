@@ -129,15 +129,17 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(body, dict) and body.get("path") is not None:
             if not (SECRET and self.headers.get("X-Eval-Secret") == SECRET):
                 return self._send(403, {"error": "path scoring requires X-Eval-Secret"})
-            cp = Path(body["path"])
-            try:
-                cp.resolve().relative_to(Path(CAND_ROOT).resolve())
-            except Exception:
+            # Resolve ONCE (symlinks included) and do every check and read on that resolved path,
+            # so the file we confine is the file we open.
+            root = os.path.realpath(CAND_ROOT)
+            cp = os.path.realpath(os.path.join(root, str(body["path"])))
+            if not cp.startswith(root + os.sep):
                 return self._send(400, {"error": f"path must live under {CAND_ROOT}"})
-            if not cp.is_file():
+            if not os.path.isfile(cp):
                 return self._send(404, {"error": f"no candidate at {cp}"})
             try:
-                body = {"tape": json.loads(cp.read_text())}
+                with open(cp) as f:
+                    body = {"tape": json.load(f)}
             except Exception as e:
                 return self._send(400, {"error": f"unreadable candidate {cp}: {e!r}"})
 

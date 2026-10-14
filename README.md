@@ -158,8 +158,6 @@ This is a corrected version of the harness the experiments first ran on:
 
 ## Known limitations
 
-- Inkling arms run through OpenRouter, pinned to the DeepInfra endpoint (fp8), because Baseten no
-  longer serves Inkling. Results from Baseten-era Inkling runs are a different deployment.
 - Under heavy parallel load, some providers rate-limit requests. The orchestrator aborts an arm
   after 8 consecutive provider errors. Run fewer arms on the same provider at once if you see
   aborts.

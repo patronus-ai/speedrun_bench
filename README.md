@@ -19,7 +19,8 @@ configuration. Each game lives in its own repo, pinned by commit in [`games.lock
 
 - Docker with Compose ≥ 2.20
 - `git` and [`uv`](https://docs.astral.sh/uv/)
-- emsdk 6.0.8, to build SuperTux
+- emsdk 6.0.8, to build SuperTux, with `EMSDK` set to its directory. `setup_games.sh` installs
+  SuperTux's other WASM dependencies with vcpkg at a pinned commit (`VCPKG_ROOT`, default `games/vcpkg`).
 - about 15 GB of disk for the game checkouts and builds
 
 ## Quick start
@@ -127,6 +128,7 @@ Filenames the agent writes are claims. Re-score a tape before reporting its numb
 | `EVAL_RESET_SECRET` | shared by each orchestrator and its eval-service; agents never receive it |
 | `STX_REPO`, `STX_BUILD_DIR`, `TUX_DIR`, `STK_DIR` | game paths, written by `scripts/setup_games.sh` |
 | `AGENTNET_SUBNET`, `AGENTNET_GATEWAY` | agent network; change if `172.18.0.0/16` is in use on your host |
+| `STX_SWEEPS`, `TUX_SWEEPS`, `TUXSEED_SWEEPS`, `STK_SWEEPS` | turns per arm for the SuperTux, Tuxemon scratch, Tuxemon seeded and SuperTuxKart fleets (default 200) |
 
 Game paths must be absolute. Each game is mounted into the containers at the same absolute path as
 on the host, so builds cannot be moved after they are made. The SuperTux build embeds its build

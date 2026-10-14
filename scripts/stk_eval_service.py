@@ -317,6 +317,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if self.path != "/score":
             return self._send(404, {"error": "not found"})
+        # REFUSE A BANNED CALLER BEFORE LOOKING AT THE BODY (see tux_eval_service.py): validating
+        # first answered an unprivileged empty request with 400, which scripts/preflight_ban.sh
+        # cannot tell from a malformed request.
+        privileged = bool(_SECRET) and self.headers.get("X-Eval-Secret") == _SECRET
+        cap = None if privileged else _budget()
+        if cap == 0:
+            return self._send(429, {"error": (
+                "scoring is DISABLED for the agent this turn (EVAL_BUDGET=0). The oracle "
+                "scores your trajectory between turns; write it and end the turn.")})
         try:
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         except Exception as e:
@@ -324,9 +333,6 @@ class Handler(BaseHTTPRequestHandler):
         src = req.get("src") or ""
         if not src.strip():
             return self._send(400, {"error": "empty trajectory"})
-
-        privileged = bool(_SECRET) and self.headers.get("X-Eval-Secret") == _SECRET
-        cap = None if privileged else _budget()
         with _lock:
             if cap == 0:
                 return self._send(429, {"error": (

@@ -18,11 +18,13 @@ set -euo pipefail
 
 NET="${AGENTNET:-speedrun-bench_agentnet}"
 ALLOW_TCP="${AGENTNET_HOST_ALLOW_TCP:-8790}"
-CHAIN=AGENTNET-HOST
-
 NID=$(docker network inspect "$NET" --format '{{.Id}}')
 IFACE="br-${NID:0:12}"
 ip link show "$IFACE" >/dev/null
+# ONE CHAIN PER NETWORK. A shared name lets a second project's run of this script FLUSH the first
+# project's rules (it did: speedrun_bench and videogamebench on one host, 2026-10-14), silently
+# re-opening the host to the other project's agents.
+CHAIN="AGH-${NID:0:12}"
 
 for IPT in iptables ip6tables; do
   # Unhook and flush any previous version first, so re-running never stacks duplicate rules.

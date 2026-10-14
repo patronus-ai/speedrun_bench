@@ -219,6 +219,29 @@ RUN if [ -n "$STRIP_SEEDS" ]; then \
       echo "STRIP_SEEDS: wiped ALL of results/speedrun (trajectories, docs, logs, best/candidates) + PLAN.md — no SML artifacts left"; \
     fi
 
+# ACTOR ALLOWLIST. `COPY . /work` above puts the WHOLE repo in the image, so without this an agent
+# can read seeds/ (scratch arms included), pdf/ (the paper, with every result) and sandbox/. A
+# denylist (.dockerignore) leaks whatever nobody thought to list, so the actor keeps ONLY what a
+# turn executes: the venv, the loop and its helpers, this game's adapter, the fleet's agent cards
+# and the decoding plugin. Anything added to the repo later is withheld by default.
+# Set ACTOR_GAME (adapter name: supertux | tuxemon | supertuxkart) and ACTOR_CARDS (card prefix)
+# on AGENT services only. Eval-service and orchestrator images must NOT set it.
+ARG ACTOR_GAME=
+ARG ACTOR_CARDS=
+RUN if [ -n "$ACTOR_GAME" ]; then \
+      set -e; mv /work /work.full; cd /work.full; \
+      mkdir -p /work/scripts/scorers /work/.opencode/agent /work/results/speedrun/best; \
+      mv .venv /work/; \
+      for f in scripts/opencode_tas_loop.sh scripts/tas_decoding.sh scripts/tas_sleep_watchdog.sh; do \
+        [ ! -f "$f" ] || cp -a "$f" /work/scripts/; done; \
+      cp -a scripts/scorers/_*.sh "scripts/scorers/$ACTOR_GAME.sh" /work/scripts/scorers/; \
+      cp -a .opencode/agent/${ACTOR_CARDS}*.md /work/.opencode/agent/; \
+      for f in .opencode/plugin .opencode/package.json .opencode/package-lock.json .opencode/node_modules; do \
+        [ ! -e "$f" ] || cp -a "$f" /work/.opencode/; done; \
+      cd /; rm -rf /work.full; \
+      echo "ACTOR ALLOWLIST ($ACTOR_GAME, cards ${ACTOR_CARDS}*): $(find /work -path /work/.venv -prune -o -type f -print | wc -l) files outside .venv"; \
+    fi
+
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/work
 # Default: run N sweeps via the agent loop (override SWEEPS or the command).
 CMD ["bash","-lc","scripts/opencode_tas_loop.sh ${SWEEPS:-3}"]

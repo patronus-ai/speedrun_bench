@@ -372,3 +372,7 @@ seeds/
 **/seeds/
 # Game checkouts and their builds are mounted into the eval-services, never copied into images.
 games/
+
+# Never in an image: the paper (every result) and the seed tapes (mounted at runtime instead).
+pdf/
+seeds/

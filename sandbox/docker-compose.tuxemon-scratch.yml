@@ -97,12 +97,13 @@ x-tux-eval: &tuxeval
     - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
 
 x-tux-agent: &tuxagent
+  image: sb-actor-tuxemon-scratch:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   cpus: 2
   mem_limit: 8g
   build:
     context: ..
     dockerfile: sandbox/Dockerfile
-    args: { HARDENED: "1", STRIP_SEEDS: "1" }
+    args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-tas- }
   # Idle; scripts/tas_orchestrator.sh drives one turn per `docker exec`.
   command: ["bash","-lc","sleep infinity"]
   networks: [agentnet]
@@ -201,6 +202,7 @@ services:
     depends_on: [eval-service-tuxemon-kimi, tuxemon-kimi-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-kimi-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-kimi:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -257,6 +259,7 @@ services:
     depends_on: [eval-service-tuxemon-deepseek, tuxemon-deepseek-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-deepseek-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-deepseek:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -305,14 +308,16 @@ services:
       no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-inkling
       TUX_EVAL_URL: http://eval-service-tuxemon-inkling:8930
       AGENT: tuxemon-tas-inkling-small
-      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
-      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
     volumes: ["../out/exported/tuxemon-inkling:/work/exported"]
   orchestrator-tuxemon-inkling:
     <<: *tuxorch
     depends_on: [eval-service-tuxemon-inkling, tuxemon-inkling-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-inkling-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-inkling:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -371,6 +376,7 @@ services:
     depends_on: [eval-service-tuxemon-sol, tuxemon-sol-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-sol-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-sol:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -432,6 +438,7 @@ services:
     depends_on: [eval-service-tuxemon-opus, tuxemon-opus-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-opus-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-opus:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -488,6 +495,7 @@ services:
     depends_on: [eval-service-tuxemon-dspro, tuxemon-dspro-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-dspro-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-dspro:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -549,6 +557,7 @@ services:
     depends_on: [eval-service-tuxemon-gemini, tuxemon-gemini-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-gemini-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-gemini:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -605,6 +614,7 @@ services:
     depends_on: [eval-service-tuxemon-glm, tuxemon-glm-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-glm-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-glm:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -664,6 +674,7 @@ services:
     depends_on: [eval-service-tuxemon-glm53, tuxemon-glm53-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-glm53-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-glm53:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -721,6 +732,7 @@ services:
     depends_on: [eval-service-tuxemon-grok, tuxemon-grok-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-grok-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-grok:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}
@@ -769,14 +781,16 @@ services:
       no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxemon-inklingfull
       TUX_EVAL_URL: http://eval-service-tuxemon-inklingfull:8930
       AGENT: tuxemon-tas-inkling-full
-      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
-      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
     volumes: ["../out/exported/tuxemon-inklingfull:/work/exported"]
   orchestrator-tuxemon-inklingfull:
     <<: *tuxorch
     depends_on: [eval-service-tuxemon-inklingfull, tuxemon-inklingfull-agent]
     environment:
       AGENT_CONTAINER: sb-tuxemon-inklingfull-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxemon-inklingfull:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUX_SWEEPS:-200}

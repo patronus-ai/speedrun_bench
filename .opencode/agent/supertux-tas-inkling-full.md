@@ -1,7 +1,7 @@
 ---
 description: Tool-assisted-speedrun optimizer for SuperTux (browser/WASM 2D platformer). Inkling / Thinking Machines. Authors a step-indexed input tape validated by the deterministic headless scorer.
 mode: primary
-model: inkling/thinkingmachines/inkling
+model: openrouter/thinkingmachines/inkling
 temperature: 0.3
 permission:
   bash: allow

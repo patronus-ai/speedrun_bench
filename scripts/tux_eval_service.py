@@ -163,6 +163,16 @@ class Handler(BaseHTTPRequestHandler):
         # the agent can reach will score a tape, so a ban is a ban.
         privileged = bool(SECRET) and self.headers.get("X-Eval-Secret") == SECRET
 
+        # REFUSE A BANNED CALLER BEFORE LOOKING AT THE BODY. Validating first answered an
+        # unprivileged empty request with 400 ("missing tape"), so scripts/preflight_ban.sh could not
+        # tell a ban from a malformed request and failed every Tuxemon arm. The ban is about who is
+        # asking, not what they sent.
+        if not privileged and BUDGET == 0:
+            return self._send(429, {"error": "scoring is DISABLED for the agent this turn "
+                                             "(EVAL_BUDGET=0). The oracle scores your "
+                                             "candidate between turns; write your tape and "
+                                             "end the turn.", "count": S.count})
+
         try:
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n) or b"{}")

@@ -39,11 +39,13 @@ include:
 x-stk-actor: &stkactor
   cpus: 2
   mem_limit: 8g
-  image: tas-sandbox-agent:latest   # game-neutral alias; the "sml-" name is legacy, this image serves every game
+  image: sb-actor-stk-scratch:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   build:
     context: ..
     dockerfile: sandbox/Dockerfile
     args:
+      ACTOR_GAME: supertuxkart
+      ACTOR_CARDS: stk-tas-
       STRIP_SEEDS: "1"   # scratch: no baked artefacts (a no-op here, results/ is dockerignored)
   # host-gateway resolves to the DEFAULT bridge (172.17.0.1); these run on agentnet, gateway
   # 172.18.0.1. Getting it wrong presents as "Cannot connect to API" with zero requests.
@@ -85,6 +87,8 @@ x-stk-orch: &stkorch
   restart: "no"
 
 x-stk-orch-env: &stkorchenv
+  # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+  ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
   GAME: supertuxkart
   SWEEPS: ${STK_SWEEPS:-200}
   EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}

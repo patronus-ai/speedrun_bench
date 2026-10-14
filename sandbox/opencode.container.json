@@ -237,6 +237,38 @@
             "reasoningEffort": "xhigh",
             "reasoning_effort": "xhigh"
           }
+        },
+        "thinkingmachines/inkling-small": {
+          "name": "Inkling Small (via OpenRouter, pinned DeepInfra)",
+          "options": {
+            "reasoningEffort": "max",
+            "reasoning_effort": "max",
+            "provider": {
+              "only": [
+                "DeepInfra"
+              ],
+              "allow_fallbacks": false
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        },
+        "thinkingmachines/inkling": {
+          "name": "Inkling (via OpenRouter, pinned DeepInfra)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "options": {
+            "provider": {
+              "only": [
+                "DeepInfra"
+              ],
+              "allow_fallbacks": false
+            }
+          }
         }
       }
     },

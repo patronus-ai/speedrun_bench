@@ -1,7 +1,7 @@
 ---
 description: Offline speedrun optimizer for SuperTuxKart (Black Forest, one lap). Inkling Small. Authors a tick-indexed input tape; holds no engine, so every number comes from a metered eval-service in another container.
 mode: primary
-model: inkling/thinkingmachines/inkling-small
+model: openrouter/thinkingmachines/inkling-small
 temperature: 0.3
 permission:
   read: allow

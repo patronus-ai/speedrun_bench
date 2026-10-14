@@ -29,6 +29,10 @@ cp sandbox/.env.example sandbox/.env      # add API keys and a random EVAL_RESET
 scripts/setup_games.sh                    # fetch + build the pinned games; writes their paths to sandbox/.env
 python3 tools/gemini_schema_proxy.py &    # only for Gemini arms (listens on :8790)
 
+# create the agent network, then block agents from reaching the host (needs root; see below)
+docker compose -f sandbox/docker-compose.base.yml up -d proxy
+sudo bash scripts/firewall_agentnet.sh
+
 # a whole fleet: one game, one condition, every model
 docker compose -f sandbox/docker-compose.tuxemon-scratch.yml up -d --build
 
@@ -38,6 +42,10 @@ docker compose -f sandbox/docker-compose.supertux-scratch.yml up -d --build \
 ```
 
 To set up only some games, name them: `scripts/setup_games.sh tuxemon stk`.
+
+The firewall rule does not survive a reboot or a recreate of the agent network; re-run
+`scripts/firewall_agentnet.sh` after either. Without it, an agent can reach any service listening
+on the host, outside the egress proxy.
 
 ## Fleets
 
@@ -64,12 +72,19 @@ proxy that allows the inference hosts and nothing else.
 | container | holds | role |
 |---|---|---|
 | eval-service | game build, scorer, `EVAL_RESET_SECRET` | scores tapes; unprivileged requests get `429` |
-| agent | opencode, its agent card, `best/` | idles (`sleep infinity`); holds no secret, scorer, game or browser |
+| agent | opencode, its fleet's agent cards, the turn loop, `best/` | idles (`sleep infinity`); holds no secret, scorer, game, browser or other repo files |
 | orchestrator | `EVAL_RESET_SECRET`, Docker socket | runs each turn with `docker exec`, then scores the candidate |
 
 The orchestrator has the candidate scored **by path**: the eval-service reads it from a read-only
 mount of the agent's export directory. Path scoring also needs the secret, so an agent cannot
-write a tape and then ask for it to be scored by name.
+write a tape and then ask for it to be scored by name. The orchestrator then writes the verdict
+into the agent's `oracle_feedback.txt` (`ORACLE_FEEDBACK_FILE`), and the next turn's prompt opens
+with it. Unset, the agent is never told how its tapes scored.
+
+The agent image is an **allowlist**: `sandbox/Dockerfile` (build args `ACTOR_GAME`, `ACTOR_CARDS`)
+rebuilds `/work` with only what a turn executes -- the venv, the loop, the game's adapter, the
+fleet's agent cards and the decoding plugin. Seeds, the paper and the rest of the repo are not
+in it. Each fleet builds its own actor image (`sb-actor-<game>-<condition>`).
 
 A scoring ban holds only if both of these are true:
 
@@ -83,8 +98,8 @@ A scoring ban holds only if both of these are true:
 - **scratch**: `best/` starts empty.
 - **seeded**: `best/` starts with one finishing tape from `seeds/`, copied in when the agent starts.
 
-Seeds are mounted at runtime and are never built into the image. Every arm, scratch included,
-runs from the same image, so a seed inside it would be readable by the scratch arms.
+Seeds are mounted at runtime and are never built into an image: `.dockerignore` excludes
+`seeds/`, and the actor image is an allowlist. Scratch arms therefore have no way to read a seed.
 
 The seeds are not human play:
 
@@ -132,10 +147,19 @@ This is a corrected version of the harness the experiments first ran on:
   in its own seed. Previously some arms needed manual steps.
 - **No host-specific paths**; every agent is limited to 2 CPUs and 8 GB; and the image no longer
   downloads an unpinned nightly N64 emulator core.
+- **Every orchestrator delivers its verdict to the agent** (`ORACLE_FEEDBACK_FILE`). Previously
+  only the seeded SuperTuxKart fleet set it, so the other fleets scored every tape but never told
+  the agent.
+- **The agent image is an allowlist**, not the whole repo. Previously `COPY . /work` put the seeds
+  (readable by scratch arms) and the paper (every result) inside every agent.
+- **The Gemini proxy renames duplicate tool-call ids.** Gemini can reuse an id in a long session;
+  from then on every request in that session is rejected as invalid, and the arm aborts.
+- **A host firewall step** (`scripts/firewall_agentnet.sh`) keeps agents off host services.
 
 ## Known limitations
 
-- Inkling-Small is no longer served by Baseten, so its arms need another deployment.
+- Inkling arms run through OpenRouter, pinned to the DeepInfra endpoint (fp8), because Baseten no
+  longer serves Inkling. Results from Baseten-era Inkling runs are a different deployment.
 - Under heavy parallel load, some providers rate-limit requests. The orchestrator aborts an arm
   after 8 consecutive provider errors. Run fewer arms on the same provider at once if you see
   aborts.
@@ -147,6 +171,7 @@ This is a corrected version of the harness the experiments first ran on:
 ```
 games.lock                             pinned game repos
 scripts/setup_games.sh                 fetch + build the games, write paths to sandbox/.env
+scripts/firewall_agentnet.sh           block agents from reaching host services
 scripts/opencode_tas_loop.sh           one agent turn (run by the orchestrator)
 scripts/tas_orchestrator.sh            drives turns, scores candidates, keeps improvements
 scripts/scorers/<game>.sh              per-game adapter: prompt vocabulary + how to score

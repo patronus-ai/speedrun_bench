@@ -54,6 +54,7 @@ services:
 
   tuxseed-kimi-agent:
     container_name: sb-tuxseed-kimi-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -61,7 +62,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-kimi]
@@ -106,6 +107,7 @@ services:
     depends_on: [eval-service-tuxseed-kimi, tuxseed-kimi-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-kimi-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-kimi:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -152,6 +154,7 @@ services:
 
   tuxseed-glm53-agent:
     container_name: sb-tuxseed-glm53-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -159,7 +162,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-glm53]
@@ -205,6 +208,7 @@ services:
     depends_on: [eval-service-tuxseed-glm53, tuxseed-glm53-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-glm53-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-glm53:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -250,6 +254,7 @@ services:
 
   tuxseed-opus-agent:
     container_name: sb-tuxseed-opus-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -257,7 +262,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-opus]
@@ -303,6 +308,7 @@ services:
     depends_on: [eval-service-tuxseed-opus, tuxseed-opus-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-opus-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-opus:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -348,6 +354,7 @@ services:
 
   tuxseed-grok-agent:
     container_name: sb-tuxseed-grok-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -355,7 +362,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-grok]
@@ -401,6 +408,7 @@ services:
     depends_on: [eval-service-tuxseed-grok, tuxseed-grok-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-grok-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-grok:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -446,6 +454,7 @@ services:
 
   tuxseed-sol-agent:
     container_name: sb-tuxseed-sol-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -453,7 +462,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-sol]
@@ -498,6 +507,7 @@ services:
     depends_on: [eval-service-tuxseed-sol, tuxseed-sol-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-sol-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-sol:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -543,6 +553,7 @@ services:
 
   tuxseed-deepseek-agent:
     container_name: sb-tuxseed-deepseek-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -550,7 +561,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-deepseek]
@@ -595,6 +606,7 @@ services:
     depends_on: [eval-service-tuxseed-deepseek, tuxseed-deepseek-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-deepseek-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-deepseek:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -640,6 +652,7 @@ services:
 
   tuxseed-dspro-agent:
     container_name: sb-tuxseed-dspro-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -647,7 +660,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-dspro]
@@ -692,6 +705,7 @@ services:
     depends_on: [eval-service-tuxseed-dspro, tuxseed-dspro-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-dspro-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-dspro:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -737,6 +751,7 @@ services:
 
   tuxseed-glm-agent:
     container_name: sb-tuxseed-glm-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -744,7 +759,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-glm]
@@ -789,6 +804,7 @@ services:
     depends_on: [eval-service-tuxseed-glm, tuxseed-glm-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-glm-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-glm:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -834,6 +850,7 @@ services:
 
   tuxseed-inkling-agent:
     container_name: sb-tuxseed-inkling-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -841,7 +858,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-inkling]
@@ -871,8 +888,9 @@ services:
       no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-inkling
       TUX_EVAL_URL: http://eval-service-tuxseed-inkling:8930
       AGENT: tuxemon-seed-tas-inkling-small
-      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
-      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
     volumes: ["../out/exported/tuxseed-inkling:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
 
   orchestrator-tuxseed-inkling:
@@ -886,6 +904,7 @@ services:
     depends_on: [eval-service-tuxseed-inkling, tuxseed-inkling-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-inkling-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-inkling:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -931,6 +950,7 @@ services:
 
   tuxseed-inklingfull-agent:
     container_name: sb-tuxseed-inklingfull-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -938,7 +958,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-inklingfull]
@@ -968,8 +988,9 @@ services:
       no_proxy: localhost,127.0.0.1,proxy,eval-service-tuxseed-inklingfull
       TUX_EVAL_URL: http://eval-service-tuxseed-inklingfull:8930
       AGENT: tuxemon-seed-tas-inkling-full
-      SWEEP_API_BASE: ${BASETEN_API_BASE:-https://inference.baseten.co/v1}
-      SWEEP_API_KEY: ${BASETEN_API_KEY:?set BASETEN_API_KEY in sandbox/.env}
+      SWEEP_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      SWEEP_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in sandbox/.env}
     volumes: ["../out/exported/tuxseed-inklingfull:/work/exported", "../seeds/tuxemon/best_tuxemon_seed_105400f.json:/seed/seed.json:ro"]
 
   orchestrator-tuxseed-inklingfull:
@@ -983,6 +1004,7 @@ services:
     depends_on: [eval-service-tuxseed-inklingfull, tuxseed-inklingfull-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-inklingfull-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-inklingfull:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -1028,6 +1050,7 @@ services:
 
   tuxseed-gemini-agent:
     container_name: sb-tuxseed-gemini-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -1035,7 +1058,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-gemini]
@@ -1081,6 +1104,7 @@ services:
     depends_on: [eval-service-tuxseed-gemini, tuxseed-gemini-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-gemini-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-gemini:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}
@@ -1126,6 +1150,7 @@ services:
 
   tuxseed-fable-agent:
     container_name: sb-tuxseed-fable-agent
+    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -1133,7 +1158,7 @@ services:
       dockerfile: sandbox/Dockerfile
       # STRIP_SEEDS stays 1: no trajectory is baked into the image. The seed arrives at runtime
       # in the agent's results/speedrun/best/, which is what SEED_MODE=human preserves.
-      args: { HARDENED: "1", STRIP_SEEDS: "1" }
+      args: { HARDENED: "1", STRIP_SEEDS: "1", ACTOR_GAME: tuxemon, ACTOR_CARDS: tuxemon-seed-tas- }
     command: ["bash","-lc","mkdir -p results/speedrun/best && cp /seed/seed.json results/speedrun/best/best_tuxemon_seed_105400f.json && exec sleep infinity"]
     networks: [agentnet]
     depends_on: [eval-service-tuxseed-fable]
@@ -1179,6 +1204,7 @@ services:
     depends_on: [eval-service-tuxseed-fable, tuxseed-fable-agent]
     environment:
       AGENT_CONTAINER: sb-tuxseed-fable-agent
+      ORACLE_FEEDBACK_FILE: /work/results/speedrun/oracle_feedback.txt
       EVAL_SERVICE_URL: http://eval-service-tuxseed-fable:8930
       EVAL_RESET_SECRET: ${EVAL_RESET_SECRET:?set EVAL_RESET_SECRET in sandbox/.env}
       SWEEPS: ${TUXSEED_SWEEPS:-200}

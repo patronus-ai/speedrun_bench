@@ -23,12 +23,14 @@ x-stx-eval: &stx_eval
     STX_CAND_ROOT: /work/candidates
 
 x-stx-actor: &stx_actor
+  image: sb-actor-supertux-seeded:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   build:
     context: ..
     dockerfile: sandbox/Dockerfile
     # No browser in the agent: scoring runs in the eval-service, and a browser plus any game assets
-    # would let an agent build its own scorer.
-    args: {STRIP_SEEDS: "1"}
+    # would let an agent build its own scorer. ACTOR_GAME rebuilds /work as an allowlist, so the
+    # repo (seeds/, pdf/, sandbox/) is not readable either.
+    args: {STRIP_SEEDS: "1", ACTOR_GAME: supertux, ACTOR_CARDS: "supertux-tas-"}
   networks: [agentnet]
   extra_hosts: ["host.docker.internal:${AGENTNET_GATEWAY:-172.18.0.1}"]
   cpus: 2
@@ -121,6 +123,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-dspro:
     <<: *stx_eval
@@ -197,6 +201,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-gemini:
     <<: *stx_eval
@@ -274,6 +280,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-glm:
     <<: *stx_eval
@@ -350,6 +358,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-grok:
     <<: *stx_eval
@@ -427,6 +437,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-kimi:
     <<: *stx_eval
@@ -503,6 +515,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-opus:
     <<: *stx_eval
@@ -580,6 +594,8 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"
 
   eval-service-stx-seeded-sol:
     <<: *stx_eval
@@ -657,3 +673,5 @@ services:
       # exist in its container, so no candidate would ever reach the scorer.
       ORACLE_CAND_PATH: "/work/candidates/candidate_for_oracle.json"
       ORACLE_KEEP_CAND: "/export/candidate_for_oracle.json"
+      # The orchestrator writes each verdict here INSIDE the agent; unset, the agent never sees one.
+      ORACLE_FEEDBACK_FILE: "/work/results/speedrun/oracle_feedback.txt"

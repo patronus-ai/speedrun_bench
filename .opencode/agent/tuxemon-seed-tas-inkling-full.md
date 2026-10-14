@@ -1,7 +1,7 @@
 ---
 description: Tool-assisted-speedrun optimizer for Tuxemon (top-down tile RPG, deterministic headless). Inkling / Baseten. Authors an [ACTION, COUNT] tape scored by the harness between turns; the agent cannot score it itself.
 mode: primary
-model: inkling/thinkingmachines/inkling
+model: openrouter/thinkingmachines/inkling
 temperature: 0.3
 permission:
   bash: allow

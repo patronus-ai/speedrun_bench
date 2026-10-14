@@ -143,6 +143,44 @@ def sanitise(body):
     return body, n
 
 
+def dedupe_tool_call_ids(body):
+    """Give every tool call in the history a unique id, rewriting its tool result to match.
+
+    Gemini (via OpenRouter) mints ids like call_166963 -- six random digits -- so a long session
+    eventually REUSES one. Measured 2026-10-02 on e3l9-gemini-scratch: call_166963 appeared at
+    message 1174 (todowrite) and again at 1214 (read). From then on every request in that session
+    was rejected 400 INVALID_ARGUMENT ("Provider returned error"), all 8 retries failed, and the
+    arm aborted twice. Renaming only the duplicate makes the identical request succeed.
+    Deterministic, so the same history is rewritten the same way each time (prompt cache intact).
+    The client's stored session is not modified."""
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return body, 0
+    seen, renamed = set(), 0
+    for i, m in enumerate(msgs):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for c in m.get("tool_calls") or []:
+            old = c.get("id")
+            if old is None:
+                continue
+            if old in seen:
+                n = 1
+                while "%s_d%d" % (old, n) in seen:
+                    n += 1
+                new = "%s_d%d" % (old, n)
+                c["id"] = new
+                renamed += 1
+                # The matching result is the first later tool message still carrying the old id.
+                for t in msgs[i + 1:]:
+                    if isinstance(t, dict) and t.get("role") == "tool" and t.get("tool_call_id") == old:
+                        t["tool_call_id"] = new
+                        break
+                old = new
+            seen.add(old)
+    return body, renamed
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -168,6 +206,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log(f"dump failed: {e}")
         body, dropped = strip_params(body)
+        body, renamed = dedupe_tool_call_ids(body)
+        if renamed:
+            log(f"renamed {renamed} duplicate tool_call id(s)")
         body, n = sanitise(body)
         if dropped:
             log(f"stripped {dropped} for {body.get('model')}")

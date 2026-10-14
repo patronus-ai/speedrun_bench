@@ -158,3 +158,19 @@ sandbox/docker-compose.*.yml           fleets; base.yml holds the proxy and netw
 seeds/                                 seed tapes for the seeded condition
 tools/gemini_schema_proxy.py           host-side proxy for Gemini's tool-schema limits
 ```
+
+## Citation
+
+The paper is on [arXiv](https://arxiv.org/abs/2610.08076) and in [`pdf/speedrunbench.pdf`](pdf/speedrunbench.pdf).
+
+```bibtex
+@misc{fujinuma2026speedrunbenchchallengingllmagents,
+      title={SpeedrunBench: Challenging LLM Agents with Video Game Speedrunning},
+      author={Yoshinari Fujinuma and Keisuke Kamahori and Ryuto Koike and Abdelrahman Madkour and Varun Prashant Gangal and Monty Bichouna and Martyna Markiewicz and Shivani Jain and Duncan Curtis and Rebecca Qian and Anand Kannappan},
+      year={2026},
+      eprint={2610.08076},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2610.08076},
+}
+```

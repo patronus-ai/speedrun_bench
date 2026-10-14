@@ -749,7 +749,11 @@ ok    = bool(d.get("reached_goal") or d.get("reached_target"))
 val   = d.get("goal_frame") if d.get("goal_frame") is not None else d.get("engine_steps")
 score = str(val) if val is not None else "none"
 bits  = []
-for k in ("maps_reached","final_map","agent_steps","error"):
+# Appended only when the game reports them: Tuxemon (maps_reached, final_map, agent_steps) and
+# SuperTux (max_progress = furthest x, died, deaths). Every SuperTux card tells the agent that
+# max_progress "tells you exactly where the run ended"; without it here a failed run read only
+# "reached=0, score=none" and a death at x=767 was indistinguishable from one at x=6078.
+for k in ("maps_reached","final_map","agent_steps","max_progress","died","deaths","error"):
     if d.get(k) not in (None,""):
         bits.append("%s=%s" % (k, d[k]))
 trail = d.get("map_trail")

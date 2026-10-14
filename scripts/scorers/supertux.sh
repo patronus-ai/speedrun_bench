@@ -124,6 +124,8 @@ PY
 import json, sys
 try:
     r = json.load(open(sys.argv[1])) or {}
+    # The eval-service wraps its verdict under "result"; a local scorer run writes it bare.
+    r = r.get("result", r) if isinstance(r.get("result"), dict) else r
     reached = bool(r.get("reached_goal"))
     print("O_REACHED=%d" % (1 if reached else 0))
     print("O_GF=%s" % (r.get("goal_frame") if reached and r.get("goal_frame") is not None else ''))

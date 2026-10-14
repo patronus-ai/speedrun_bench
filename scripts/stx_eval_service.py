@@ -173,8 +173,11 @@ class Handler(BaseHTTPRequestHandler):
                                         "count": count_now})
             except Exception as e:
                 return self._send(500, {"error": f"scorer crashed: {e!r}", "count": count_now})
-        res["_eval_count"] = count_now
-        return self._send(200, res)
+        # WRAPPED UNDER "result", like tux_eval_service.py and stk_eval_service.py. The orchestrator
+        # (log line, agent feedback AND copy-back) reads verdicts from d["result"]; a top-level
+        # result was read as "no result" -- logged REFUSED, reported to the agent as
+        # "reached=0, score=none" even for a tape that reached the goal, and never copied back.
+        return self._send(200, {"result": res, "count": count_now})
 
 
 print(f"stx eval-service on :{PORT}  "

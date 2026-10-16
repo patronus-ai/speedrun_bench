@@ -39,7 +39,6 @@ include:
 x-stk-actor: &stkactor
   cpus: 2
   mem_limit: 8g
-  image: sb-actor-stk-seeded:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   build:
     context: ..
     dockerfile: sandbox/Dockerfile

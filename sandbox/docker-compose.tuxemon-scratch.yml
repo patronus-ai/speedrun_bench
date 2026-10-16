@@ -97,7 +97,6 @@ x-tux-eval: &tuxeval
     - ${TUX_DIR:?set TUX_DIR in sandbox/.env}:${TUX_DIR}:ro
 
 x-tux-agent: &tuxagent
-  image: sb-actor-tuxemon-scratch:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   cpus: 2
   mem_limit: 8g
   build:

@@ -85,7 +85,7 @@ with it. Unset, the agent is never told how its tapes scored.
 The agent image is an **allowlist**: `sandbox/Dockerfile` (build args `ACTOR_GAME`, `ACTOR_CARDS`)
 rebuilds `/work` with only what a turn executes -- the venv, the loop, the game's adapter, the
 fleet's agent cards and the decoding plugin. Seeds, the paper and the rest of the repo are not
-in it. Each fleet builds its own actor image (`sb-actor-<game>-<condition>`).
+in it.
 
 A scoring ban holds only if both of these are true:
 

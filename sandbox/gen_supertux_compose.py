@@ -256,7 +256,12 @@ def arm(cond, m, spec):
         # The in-loop scorer still calls the service; banned, it is refused (429) and the adapter
         # reports NOT SCORED rather than a failed run. The orchestrator does the real scoring.
         "STX_EVAL_URL": f"http://{ev}:8920",
-        "NO_PROXY": f"localhost,127.0.0.1,proxy,{ev}", "no_proxy": f"localhost,127.0.0.1,proxy,{ev}",
+        # host.docker.internal MUST bypass the egress proxy: the Gemini arms reach the host-side
+        # schema proxy there (:8790). Through tinyproxy it is refused ("403 Filtered"), opencode
+        # prints "Error: Filtered", and every turn ends with no candidate. The host firewall
+        # (scripts/firewall_agentnet.sh) still limits agents to that one host port.
+        "NO_PROXY": f"localhost,127.0.0.1,proxy,{ev},host.docker.internal",
+        "no_proxy": f"localhost,127.0.0.1,proxy,{ev},host.docker.internal",
     })
     agent_env.update(spec["provider"])
     seed_cp = ("cp /seed/seed.json results/speedrun/best/best_supertux_seed_9498f.json\n"
@@ -339,7 +344,6 @@ x-stx-eval: &stx_eval
     STX_CAND_ROOT: /work/candidates
 
 x-stx-actor: &stx_actor
-  image: sb-actor-supertux-{cond}:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   build:
     context: ..
     dockerfile: sandbox/Dockerfile

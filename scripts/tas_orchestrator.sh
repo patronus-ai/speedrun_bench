@@ -698,7 +698,14 @@ print(("%g" % v) if (ok and isinstance(v, (int, float)) and not isinstance(v, bo
       # The candidate path above is in the EVAL-SERVICE namespace (/work/candidates/...); the
       # agent mounts that same host dir at /work/exported. Copying $_cand verbatim inside the
       # agent would fail on a path that does not exist there.
-      _agent_cand="/work/exported/$(basename "$_cand")"
+      # ORACLE_KEEP_CAND, when it is a path, IS the agent-side location of this file (every fleet
+      # sets it explicitly). Use it: SuperTux mounts its export dir at /export, not /work/exported,
+      # so the hardcoded fallback made every SuperTux improvement "copy-back FAILED" -- scored,
+      # reported to the agent, and then lost (Opus beat the 9498f seed and nothing was banked).
+      case "${ORACLE_KEEP_CAND:-}" in
+        /*) _agent_cand="$ORACLE_KEEP_CAND" ;;
+        *)  _agent_cand="/work/exported/$(basename "$_cand")" ;;
+      esac
       _bar=$(docker exec "$AGENT_CONTAINER" sh -c 'ls /work/results/speedrun/best/ 2>/dev/null' \
              | grep -oE '[0-9]+f\.json' | grep -oE '[0-9]+' | sort -n | head -1)
       # FLOAT-SAFE. `-lt` is integer-only and STK's bar is a lap TIME (176.591), so

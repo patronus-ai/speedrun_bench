@@ -54,7 +54,6 @@ services:
 
   tuxseed-kimi-agent:
     container_name: sb-tuxseed-kimi-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -154,7 +153,6 @@ services:
 
   tuxseed-glm53-agent:
     container_name: sb-tuxseed-glm53-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -254,7 +252,6 @@ services:
 
   tuxseed-opus-agent:
     container_name: sb-tuxseed-opus-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -354,7 +351,6 @@ services:
 
   tuxseed-grok-agent:
     container_name: sb-tuxseed-grok-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -454,7 +450,6 @@ services:
 
   tuxseed-sol-agent:
     container_name: sb-tuxseed-sol-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -553,7 +548,6 @@ services:
 
   tuxseed-deepseek-agent:
     container_name: sb-tuxseed-deepseek-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -652,7 +646,6 @@ services:
 
   tuxseed-dspro-agent:
     container_name: sb-tuxseed-dspro-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -751,7 +744,6 @@ services:
 
   tuxseed-glm-agent:
     container_name: sb-tuxseed-glm-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -850,7 +842,6 @@ services:
 
   tuxseed-inkling-agent:
     container_name: sb-tuxseed-inkling-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -950,7 +941,6 @@ services:
 
   tuxseed-inklingfull-agent:
     container_name: sb-tuxseed-inklingfull-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -1050,7 +1040,6 @@ services:
 
   tuxseed-gemini-agent:
     container_name: sb-tuxseed-gemini-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:
@@ -1150,7 +1139,6 @@ services:
 
   tuxseed-fable-agent:
     container_name: sb-tuxseed-fable-agent
-    image: sb-actor-tuxemon-seeded:latest
     cpus: 2
     mem_limit: 8g
     build:

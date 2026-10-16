@@ -39,7 +39,6 @@ include:
 x-stk-actor: &stkactor
   cpus: 2
   mem_limit: 8g
-  image: sb-actor-stk-scratch:latest   # allowlist actor: see sandbox/Dockerfile ACTOR_GAME
   build:
     context: ..
     dockerfile: sandbox/Dockerfile
@@ -57,6 +56,7 @@ x-stk-actor: &stkactor
   command: ["bash", "-lc", "sleep infinity"]
 
 x-stk-actor-env: &stkactorenv
+  ORACLE_KEEP_CAND: /work/results/speedrun/candidate_for_oracle.traj
   HTTP_PROXY: http://proxy:8888
   HTTPS_PROXY: http://proxy:8888
   http_proxy: http://proxy:8888
@@ -96,10 +96,14 @@ x-stk-orch-env: &stkorchenv
   # `find results/speedrun -name '*.json' -delete` would run for nothing.
   SEED_MODE: scratch    # delete ALL trajectories, including any seed
   VISION_WAIT: "0"
+  ORACLE_GOAL_LABEL: "a finished lap"
+  # SCORE BY PATH, exactly as the seeded fleet does. This block used to set only ORACLE_SRC_POST
+  # plus ORACLE_KEEP_CAND="1" (a flag where a PATH is expected), so the orchestrator never found
+  # a candidate: 10 turns, zero verdicts, nothing ever reached the agent. The agent keeps its
+  # candidate at this path (ORACLE_KEEP_CAND on the actor) and the orchestrator reads it here.
+  ORACLE_BY_PATH: "1"
+  ORACLE_CAND_PATH: /work/results/speedrun/candidate_for_oracle.traj
   ORACLE_SRC_POST: "1"
-  # The loop deletes results/speedrun/candidate.traj at end of turn unless this is set, so the
-  # oracle would otherwise read the path AFTER the delete and report "nothing to score".
-  ORACLE_KEEP_CAND: "1"
   # Distance, not frames: with nothing finishing, promotion is on max_distance and LARGER is
   # better. The adapter emits O_GF only on a real finish, so this bar stays untouched until then.
   BEST_FRAME_INIT: "999999" # nothing to beat yet

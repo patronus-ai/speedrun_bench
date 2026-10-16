@@ -75,7 +75,9 @@ stk)
   # Assets must be a sibling of stk-code; the native headless build applies patches/ at build
   # time only (docker/lib-patches.sh) and leaves content-addressed stamps in build/patch-stamps/.
   [ -d "$STK_DIR/stk-assets" ] || (cd "$STK_DIR" && bash scripts/fetch-assets.sh)
-  [ -x "$STK_DIR/build/native/bin/supertuxkart" ] || (cd "$STK_DIR" && bash docker/build-native.sh)
+  # `make native`, not docker/build-native.sh: that script runs INSIDE the stk-ghosts-wasm build
+  # image with the repo mounted at /src (`cd /src/stk-code`); run on the host it fails at once.
+  [ -x "$STK_DIR/build/native/bin/supertuxkart" ] || (cd "$STK_DIR" && make native)
   setenv STK_DIR "$STK_DIR"
   ;;
 

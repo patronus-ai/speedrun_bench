@@ -18,7 +18,7 @@ configuration. Each game lives in its own repo, pinned by commit in [`games.lock
 ## Requirements
 
 - Docker with Compose ≥ 2.20
-- `git` and [`uv`](https://docs.astral.sh/uv/)
+- `git`, `make` and [`uv`](https://docs.astral.sh/uv/)
 - emsdk 6.0.8, to build SuperTux, with `EMSDK` set to its directory. `setup_games.sh` installs
   SuperTux's other WASM dependencies with vcpkg at a pinned commit (`VCPKG_ROOT`, default `games/vcpkg`).
 - about 15 GB of disk for the game checkouts and builds

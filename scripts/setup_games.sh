@@ -21,7 +21,10 @@ pin() { awk -v g="$1" -v f="$2" '$1==g {print $f}' "$ROOT/games.lock"; }
 
 checkout() {                      # checkout <game-key> <dir-name>
   local url commit dir; url="$(pin "$1" 2)"; commit="$(pin "$1" 3)"; dir="$GAMES_DIR/$2"
-  if [ ! -d "$dir/.git" ]; then git clone --filter=blob:none "$url" "$dir"; fi
+  if [ ! -d "$dir/.git" ]; then
+    git clone --filter=blob:none "$url" "$dir" \
+      || { echo "could not clone $url -- if it is a private repository, you need access to it" >&2; exit 1; }
+  fi
   git -C "$dir" fetch --quiet origin "$commit" 2>/dev/null || git -C "$dir" fetch --quiet origin
   git -C "$dir" checkout --quiet "$commit"
   git -C "$dir" submodule update --init --recursive --quiet
@@ -38,11 +41,15 @@ for g in $WANT; do case "$g" in
 supertux)
   checkout supertux supertux-speedrun
   STX_REPO="$GAMES_DIR/supertux-speedrun"
-  # tools/stx_build_wasm.sh needs emsdk 6.0.8 (see DETERMINISM.md in that repo). The output
-  # directory is part of the build: emscripten bakes it into the preloaded data, so build it
-  # where it will be mounted.
+  # tools/stx_build_wasm.sh needs emsdk 6.0.8 (see DETERMINISM.md in that repo) and vcpkg with
+  # the wasm32-emscripten dependencies, which tools/stx_setup_deps.sh installs at a pinned commit.
+  # The output directory is part of the build: emscripten bakes it into the preloaded data, so
+  # build it where it will be mounted.
   if [ ! -d "$STX_REPO/build-wasm/data" ]; then
-    (cd "$STX_REPO" && bash tools/stx_build_wasm.sh)
+    : "${EMSDK:?set EMSDK to an emsdk checkout with 6.0.8 activated (see README Requirements)}"
+    export EMSDK VCPKG_ROOT="${VCPKG_ROOT:-$GAMES_DIR/vcpkg}"
+    (cd "$STX_REPO" && bash tools/stx_setup_deps.sh && bash tools/stx_build_wasm.sh) \
+      || { echo "SuperTux build failed (see output above)" >&2; exit 1; }
   fi
   setenv STX_REPO "$STX_REPO"
   setenv STX_BUILD_DIR "$STX_REPO/build-wasm"

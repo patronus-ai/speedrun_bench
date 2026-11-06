@@ -208,12 +208,17 @@ for i in $(seq 1 "$N"); do
   # wrote nothing. Measured on pkblueun/glm53: an 18KB route program written at 01:44 was gone by
   # the time the oracle looked at 01:45:17. Passing it HERE rather than in the agent's compose env
   # means enabling it does not require recreating the actor and discarding its accumulated notes.
+  #
+  # PREFIX THE AGENT'S LINES. This stream carries the model's own reply (opencode_tas_loop.sh
+  # echoes it) and log() is only a bracketed timestamp, so a reply could print a line identical
+  # to a real "[orchestrator ...] oracle turn N: COPY-BACK" verdict. The raw text still goes to
+  # $_turn_out, so the dead-arm detector below reads exactly what it read before.
   _turn_out="${SCRATCH_TMP:-/tmp}/turn_$i.out"
   docker exec \
     -e TAS_TURN_INDEX="$i" -e TAS_NUM_TURNS="$N" -e RUN_ID="$RUN_ID" -e TAS_PHASE="$TAS_PHASE" \
     ${ORACLE_KEEP_CAND:+-e ORACLE_KEEP_CAND="$ORACLE_KEEP_CAND"} \
     ${ORACLE_FEEDBACK_FILE:+-e ORACLE_FEEDBACK_FILE="$ORACLE_FEEDBACK_FILE"} \
-    "$AGENT_CONTAINER" bash -lc 'scripts/opencode_tas_loop.sh' 2>&1 | tee "$_turn_out"
+    "$AGENT_CONTAINER" bash -lc 'scripts/opencode_tas_loop.sh' 2>&1 | tee "$_turn_out" | sed -u 's/^/  agent| /'
   # PIPESTATUS, not `|| log`: through the pipe `||` would test tee's status, which is always 0,
   # and a failed turn would silently stop being reported.
   [ "${PIPESTATUS[0]}" -eq 0 ] || log "WARN: agent turn $i exited non-zero"

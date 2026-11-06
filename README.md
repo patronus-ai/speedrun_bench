@@ -114,6 +114,8 @@ The seeds are not human play:
 
 - **Orchestrator log:** each turn's verdict. A verified improvement appears as
   `COPY-BACK <n>f -> best/`, written only after the scorer confirms the run reached the goal.
+  The agent's own turn output appears in the same log behind an `agent|` prefix; only lines
+  that start with `[orchestrator` are written by the orchestrator.
 - **`out/exported/<arm>/`:** the agent's tapes, plan and per-turn logs.
 
 Filenames the agent writes are claims. Re-score a tape before reporting its number.

@@ -165,7 +165,10 @@
           "name": "DeepSeek V4 Flash 0731",
           "options": {
             "reasoningEffort": "max",
-            "reasoning_effort": "max"
+            "reasoning_effort": "max",
+            "reasoning": {
+              "max_tokens": 32000
+            }
           },
           "limit": {
             "context": 131072,

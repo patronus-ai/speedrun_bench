@@ -796,8 +796,11 @@ $_SCHEMA
   # about; if opencode ever resolves cards from somewhere else, this catches the fallback from
   # opencode's own mouth. Either way the run must STOP rather than attribute another model's
   # (or a tool-less image model's) turns to $AGENT.
+  # Match the warning for THIS agent's name, not the bare phrase: an agent that prints this
+  # script's own source (GLM 5.3 did, on SuperTux turn 94) echoes the phrase back and tripped a
+  # FATAL on a run whose model never changed.
   if [ "${REQUIRE_AGENT_CARD:-1}" = "1" ] \
-     && printf '%s' "$OUT" | grep -q 'not found. Falling back to default agent'; then
+     && printf '%s' "$OUT" | grep -qF "agent \"$AGENT\" not found. Falling back to default agent"; then
     echo "FATAL: opencode fell back to its default agent -- '$AGENT' was not resolvable at runtime." | tee -a "$LOG"
     echo "       Every turn from here would be attributed to $AGENT but produced by another model." | tee -a "$LOG"
     exit 78

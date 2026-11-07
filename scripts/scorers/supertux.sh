@@ -121,7 +121,7 @@ PY
               --level "$STX_LEVEL" --max-steps "$STX_MAX_STEPS" --quiet 2>&1)
   fi
   SC=$("$TAS_PY" - "$X_RESULT" <<'PY' 2>/dev/null
-import json, sys
+import json, shlex, sys
 try:
     r = json.load(open(sys.argv[1])) or {}
     # The eval-service wraps its verdict under "result"; a local scorer run writes it bare.
@@ -135,13 +135,17 @@ try:
     mp = r.get("max_progress")
     print("O_MP=%s" % ('' if mp is None else round(float(mp), 1)))
     rr = r.get("reject_reasons") or []
-    print("O_EXTRA='ran %s steps, furthest x %s, died=%s%s'" % (
+    print("O_EXTRA=%s" % shlex.quote("ran %s steps, furthest x %s, died=%s%s" % (
         r.get("steps_run"), ('?' if mp is None else round(float(mp), 1)),
         bool(r.get("died")),
-        ('; ' + str(rr[0])[:160].replace("'", "")) if rr else ''))
+        ('; ' + str(rr[0])[:160]) if rr else '')))
 except Exception as e:
     print("O_REACHED=0"); print("O_GF="); print("O_DIED=0"); print("O_MP=")
-    print("O_ERR=%s" % str(e)[:120].replace(chr(10), ' '))
+    # QUOTED. The loop `eval`s every line this prints. Unquoted, a missing result file (every
+    # banned turn) printed `O_ERR=[Errno 2] No such file ...`, which bash ran as the assignment
+    # `O_ERR=[Errno` followed by the command `2]` -> "line 853: 2]: command not found", once per
+    # turn in every SuperTux arm.
+    print("O_ERR=%s" % shlex.quote(str(e)[:120].replace(chr(10), ' ')))
 PY
 )
   printf 'O_REACHED=0\nO_GF=\nO_DIED=0\nO_MP=\nO_ERR=\nO_EXTRA=\n%s\n' "$SC"
@@ -212,6 +216,11 @@ PY
 import json, sys
 try:
     r = json.load(open(sys.argv[1])) or {}
+    # The eval-service wraps its verdict under "result" (the `score` branch above already unwraps
+    # it). Read bare, every verify through the eval-service came back empty, and the loop deletes
+    # an improvement whose re-score is empty -- so any capped or open arm would have discarded
+    # every genuine improvement as "re-scored as no clear". Banned arms never reach verify.
+    r = r.get("result", r) if isinstance(r.get("result"), dict) else r
     print("%s" % (r.get("goal_frame") if r.get("reached_goal") else ""))
 except Exception:
     print("")

@@ -666,6 +666,30 @@ print("; ".join(bits) + ("; RouteError: " + err if err else ""))
       *)              log "oracle turn $i: REFUSED -- $(printf '%s' "$_verdict" | head -c 200)" ;;
     esac
 
+    # ---- KEEP EVERY SCORED PROPOSAL, not just the winners -------------------------------------
+    # The candidate file is overwritten every turn, and the loop's per-turn snapshot
+    # (iters/iter_N/) only copies candidate.json -- not the file scored here. An agent that writes
+    # only $ORACLE_KEEP_CAND therefore left nothing but its promoted bests: SuperTux DS Flash
+    # seeded had 36 distinct scored tapes and 22 survived; Gemini seeded 38 and 11. A verdict
+    # whose tape is gone cannot be re-scored. Keep a copy next to the agent's export, numbered by
+    # turn, and log its hash so a turn that re-scored an unchanged file is visible as such.
+    if [ "${ORACLE_KEEP_PROPOSALS:-1}" = "1" ] && [ -n "${_cand:-}" ]; then
+      case "$_verdict" in *'"result"'*)
+        case "${ORACLE_KEEP_CAND:-}" in
+          /*) _kp_src="$ORACLE_KEEP_CAND" ;;
+          *)  _kp_src="/work/exported/$(basename "$_cand")" ;;
+        esac
+        _kp_dst="$(dirname "$_kp_src")/scored/turn_$(printf '%03d' "$i").json"
+        if docker exec "$AGENT_CONTAINER" sh -c "mkdir -p '$(dirname "$_kp_dst")' && cp '$_kp_src' '$_kp_dst'" 2>/dev/null; then
+          _kp_sha=$(docker exec "$AGENT_CONTAINER" sha256sum "$_kp_dst" 2>/dev/null | cut -c1-12)
+          log "oracle turn $i: scored candidate kept as $_kp_dst (sha256 ${_kp_sha:-?})"
+        else
+          log "oracle turn $i: WARNING could not keep the scored candidate ($_kp_src)"
+        fi
+        ;;
+      esac
+    fi
+
     # ---- COPY-BACK: a WINNING candidate has to LAND in the agent's best/ ---------------------
     # NOBODY OWNED THIS, AND IT SILENTLY CAPPED EVERY SEEDED ARM. promote_best only ranks files
     # that are ALREADY in results/speedrun/best/. In the normal topology the AGENT saves its own

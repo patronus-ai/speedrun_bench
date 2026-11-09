@@ -163,6 +163,7 @@ tools/gemini_schema_proxy.py           host-side proxy for Gemini's tool-schema 
 ## Citation
 
 The paper is on [arXiv](https://arxiv.org/abs/2610.08076) and in [`pdf/speedrunbench.pdf`](pdf/speedrunbench.pdf).
+If you find this code or paper to be useful, please cite the following:
 
 ```bibtex
 @misc{fujinuma2026speedrunbenchchallengingllmagents,

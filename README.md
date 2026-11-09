@@ -134,30 +134,6 @@ Game paths must be absolute. Each game is mounted into the containers at the sam
 on the host, so builds cannot be moved after they are made. The SuperTux build embeds its build
 directory, and the Tuxemon venv points into its own tree.
 
-## Changes from the original harness
-
-This is a corrected version of the harness the experiments first ran on:
-
-- **SuperTux uses the same three-container arm as the other games.** Previously its agent held the
-  scoring secret, which made its ban bypassable.
-- **SuperTuxKart seed details reach seeded arms only.** They used to be in text shipped inside
-  every agent's image, scratch arms included.
-- **All SuperTuxKart agent cards describe the same tape format as the per-turn prompt.**
-- **A ban refusal is reported to the agent as "NOT SCORED".** Previously it read "REJECTED", as
-  if the tape had run and failed.
-- **Every orchestrator sets the agent-side candidate path explicitly**, and every seeded arm copies
-  in its own seed. Previously some arms needed manual steps.
-- **No host-specific paths**; every agent is limited to 2 CPUs and 8 GB; and the image no longer
-  downloads an unpinned nightly N64 emulator core.
-- **Every orchestrator delivers its verdict to the agent** (`ORACLE_FEEDBACK_FILE`). Previously
-  only the seeded SuperTuxKart fleet set it, so the other fleets scored every tape but never told
-  the agent.
-- **The agent image is an allowlist**, not the whole repo. Previously `COPY . /work` put the seeds
-  (readable by scratch arms) and the paper (every result) inside every agent.
-- **The Gemini proxy renames duplicate tool-call ids.** Gemini can reuse an id in a long session;
-  from then on every request in that session is rejected as invalid, and the arm aborts.
-- **A host firewall step** (`scripts/firewall_agentnet.sh`) keeps agents off host services.
-
 ## Known limitations
 
 - Under heavy parallel load, some providers rate-limit requests. The orchestrator aborts an arm

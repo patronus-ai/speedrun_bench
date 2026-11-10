@@ -238,7 +238,8 @@ case "$BEST_FRAME_MODE" in
     # NO FRAME COUNTS IN THIS FILE. It ships to every agent container via `COPY . /work`
     # (sandbox/Dockerfile:105), so a concrete achieved score here would hand the arm both the
     # answer and the knowledge that its stated bar is not the real frontier.
-    BEST_FRAME=$(ls results/speedrun/best/*[0-9]f.json results/speedrun/best/*[0-9]f.py 2>/dev/null | grep -oE '[0-9]+f\.(json|py)' | grep -oE '[0-9]+' | sort -n | head -1) ;;
+    # Lap times can be fractional; stripping to the final integer changes the score.
+    BEST_FRAME=$(ls results/speedrun/best/*[0-9]f.json results/speedrun/best/*[0-9]f.py 2>/dev/null | grep -oE '[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?f\.(json|py)$' | sed -E 's/f\.(json|py)$//' | sort -g | head -1) ;;
   *)
     echo "FATAL: scripts/scorers/${GAME}.sh declared BEST_FRAME_MODE=$BEST_FRAME_MODE (expected human_gold or best_dir)." >&2
     exit 1 ;;
@@ -1033,8 +1034,9 @@ PY
          | sed -nE 's/^MEASURED_BEST=([0-9]+)$/\1/p' | tail -1)
   fi
   if [ -z "$MB" ]; then
-    MB=$(ls results/speedrun/*.json results/speedrun/best/*.json 2>/dev/null \
-         | grep -oE "[0-9]+f\\.json" | grep -oE "[0-9]+" | sort -n | head -1)
+    MB=$(ls results/speedrun/*.json results/speedrun/best/*.json results/speedrun/best/*.py 2>/dev/null \
+         | grep -oE '[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?f\.(json|py)$' \
+         | sed -E 's/f\.(json|py)$//' | sort -g | head -1)
   fi
   # `st` is free text from the agent and HAS contained commas, which shifted every later
   # column and produced junk measured_best values (a two-digit number where a five-digit

@@ -715,9 +715,12 @@ v  = d.get("goal_frame") if d.get("goal_frame") is not None else d.get("engine_s
 # goal_frame=176.591034. A genuine finished lap -- reached_goal=True, laps_done=1 --
 # was therefore discarded on a type check and never copied back into best/, so the
 # agent kept being told best=999999f with a finishing tape already in hand.
-# Formatted with %g so an integer frame count still renders as "7741" and lands in
-# the <N>f.json filename promote_best ranks on, while 176.591034 survives intact.
-print(("%g" % v) if (ok and isinstance(v, (int, float)) and not isinstance(v, bool)) else "")' 2>/dev/null)
+# Preserve the JSON number: %g rounds to six significant digits and can change the score.
+if ok and isinstance(v, (int, float)) and not isinstance(v, bool):
+    # Integer-game filename promotion expects integer suffixes for whole-valued floats too.
+    print(int(v) if isinstance(v, float) and v.is_integer() else v)
+else:
+    print("")' 2>/dev/null)
     if [ -n "$_new" ]; then
       # The candidate path above is in the EVAL-SERVICE namespace (/work/candidates/...); the
       # agent mounts that same host dir at /work/exported. Copying $_cand verbatim inside the
@@ -731,7 +734,7 @@ print(("%g" % v) if (ok and isinstance(v, (int, float)) and not isinstance(v, bo
         *)  _agent_cand="/work/exported/$(basename "$_cand")" ;;
       esac
       _bar=$(docker exec "$AGENT_CONTAINER" sh -c 'ls /work/results/speedrun/best/ 2>/dev/null' \
-             | grep -oE '[0-9]+f\.json' | grep -oE '[0-9]+' | sort -n | head -1)
+             | grep -oE '[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?f\.json$' | sed 's/f\.json$//' | sort -g | head -1)
       # FLOAT-SAFE. `-lt` is integer-only and STK's bar is a lap TIME (176.591), so
       # the comparison errored and no copy-back happened even once the value survived
       # the type check above. Same defect already fixed twice in this file's sibling

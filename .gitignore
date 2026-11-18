@@ -1,0 +1,9 @@
+# secrets and machine-local paths
+sandbox/.env
+**/.env
+# game checkouts and builds (fetched by scripts/setup_games.sh, pinned in games.lock)
+games/
+# run output
+out/
+results/
+__pycache__/

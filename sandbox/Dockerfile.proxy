@@ -1,0 +1,10 @@
+# Egress gateway: a tiny forward proxy that allowlists ONLY the vLLM host.
+# It sits on both the internal agent network and an internet-connected network,
+# so it is the agent's sole route out — and it denies every host except the one
+# in sandbox/filter.
+FROM alpine:3.20
+RUN apk add --no-cache tinyproxy
+COPY sandbox/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf
+COPY sandbox/filter /etc/tinyproxy/filter
+EXPOSE 8888
+CMD ["tinyproxy", "-d"]

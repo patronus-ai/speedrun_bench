@@ -1,0 +1,26 @@
+# Egress allowlist (extended regex, matched against the requested host).
+# Only the model-inference endpoints below are permitted; every other host is denied.
+# Add more hosts (one regex per line) if the agent legitimately needs them.
+#
+# ROLLOUT NOTE (openrouter.ai, added but NOT yet deployed): this file is baked into the proxy
+# image by sandbox/Dockerfile.proxy (`COPY sandbox/filter /etc/tinyproxy/filter`), so editing
+# it here changes NOTHING for the proxy container that is already running. Deploying it needs
+# either (a) `docker cp sandbox/filter <proxy>:/etc/tinyproxy/filter` + `docker kill -s HUP
+# <proxy>` (tinyproxy re-reads its config and filter file on SIGHUP, in-process), or (b) an
+# image rebuild + container recreate, which DOES drop every in-flight connection. Use (a)
+# while arms are running; (b) only at a break between runs.
+^kimi-k27code\.ngrok\.app$
+^mimo-v25\.ngrok\.app$
+^inference\.baseten\.co$
+^api\.openai\.com$
+# OpenRouter — needed by the Grok (x-ai/grok-4.6) wolf3d arms. Until this is deployed to the
+# running proxy those arms attach to sml-tas-sandbox_netout and have UNFILTERED egress; see
+# the EGRESS note in sandbox/docker-compose.grok.yml.
+^openrouter\.ai$
+# Anthropic direct. NOTE: openrouter.ai above already serves anthropic/claude-opus-5, so an
+# Opus arm does NOT need this host — prefer the OpenRouter route, which is already deployed
+# and needs no new npm package. This entry exists for a direct-API arm; such an arm also
+# needs @ai-sdk/anthropic baked into the image (sandbox/Dockerfile installs only
+# @ai-sdk/openai-compatible, and registry.npmjs.org is NOT allowlisted, so it cannot be
+# fetched at runtime) OR a provider block pointed at Anthropic's OpenAI-compatible route.
+^api\.anthropic\.com$

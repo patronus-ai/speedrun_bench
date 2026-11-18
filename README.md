@@ -1,0 +1,178 @@
+# speedrun_bench
+
+Reproduce the LLM speedrun experiments on **SuperTux**, **Tuxemon** and **SuperTuxKart**.
+
+Each turn, an agent (an LLM driving the opencode CLI) writes an input tape for a level and is told
+how that tape scored. The agent never runs the game. Scoring happens in a separate container, and
+the agent's own requests to it are refused. The score is how fast the finished run is.
+
+This repo contains the experiment only: harness, containers, agent prompts, seeds and
+configuration. Each game lives in its own repo, pinned by commit in [`games.lock`](games.lock):
+
+| game | repo |
+|---|---|
+| SuperTux | [patronus-ai/supertux-speedrun](https://github.com/patronus-ai/supertux-speedrun) |
+| Tuxemon | [patronus-ai/tuxemon-speedrun](https://github.com/patronus-ai/tuxemon-speedrun) |
+| SuperTuxKart | [patronus-ai/stk-ghosts](https://github.com/patronus-ai/stk-ghosts) |
+
+## Requirements
+
+- Docker with Compose ≥ 2.20
+- `git`, `make` and [`uv`](https://docs.astral.sh/uv/)
+- emsdk 6.0.8, to build SuperTux, with `EMSDK` set to its directory. `setup_games.sh` installs
+  SuperTux's other WASM dependencies with vcpkg at a pinned commit (`VCPKG_ROOT`, default `games/vcpkg`).
+- about 15 GB of disk for the game checkouts and builds
+
+## Quick start
+
+```bash
+cp sandbox/.env.example sandbox/.env      # add API keys and a random EVAL_RESET_SECRET
+scripts/setup_games.sh                    # fetch + build the pinned games; writes their paths to sandbox/.env
+python3 tools/gemini_schema_proxy.py &    # only for Gemini arms (listens on :8790)
+
+# create the agent network, then block agents from reaching the host (needs root; see below)
+docker compose -f sandbox/docker-compose.base.yml up -d proxy
+sudo bash scripts/firewall_agentnet.sh
+
+# a whole fleet: one game, one condition, every model
+docker compose -f sandbox/docker-compose.tuxemon-scratch.yml up -d --build
+
+# a single arm, plus the egress proxy
+docker compose -f sandbox/docker-compose.supertux-scratch.yml up -d --build \
+    proxy eval-service-stx-scratch-opus stx-scratch-opus orchestrator-stx-scratch-opus
+```
+
+To set up only some games, name them: `scripts/setup_games.sh tuxemon stk`.
+
+The firewall rule does not survive a reboot or a recreate of the agent network; re-run
+`scripts/firewall_agentnet.sh` after either. Without it, an agent can reach any service listening
+on the host, outside the egress proxy.
+
+## Fleets
+
+Six compose files in `sandbox/`, one per game and condition:
+
+```
+docker-compose.supertux-scratch.yml   docker-compose.supertux-seeded.yml
+docker-compose.tuxemon-scratch.yml    docker-compose.tuxemon-seeded.yml
+docker-compose.stk-scratch.yml        docker-compose.stk-seeded.yml
+```
+
+Each file defines one arm per model: Claude Opus 5, GPT-5.6 Sol, Kimi-K3, GLM 5.2 / 5.3, Grok 4.6,
+Gemini 3.7 Flash, DeepSeek V4 Flash / Pro and Inkling. The exact set differs by file. The
+SuperTux files are generated, so edit `sandbox/gen_supertux_compose.py` and re-run it.
+
+All files share one Compose project (`speedrun-bench`) and one internal network. Container names
+start with `sb-`, so the fleets can run alongside other containers on the same host.
+
+## How an arm works
+
+Each arm is three containers on an internal network (`agentnet`). Their only route out is a
+proxy that allows the inference hosts and nothing else.
+
+| container | holds | role |
+|---|---|---|
+| eval-service | game build, scorer, `EVAL_RESET_SECRET` | scores tapes; unprivileged requests get `429` |
+| agent | opencode, its fleet's agent cards, the turn loop, `best/` | idles (`sleep infinity`); holds no secret, scorer, game, browser or other repo files |
+| orchestrator | `EVAL_RESET_SECRET`, Docker socket | runs each turn with `docker exec`, then scores the candidate |
+
+The orchestrator has the candidate scored **by path**: the eval-service reads it from a read-only
+mount of the agent's export directory. Path scoring also needs the secret, so an agent cannot
+write a tape and then ask for it to be scored by name. The orchestrator then writes the verdict
+into the agent's `oracle_feedback.txt` (`ORACLE_FEEDBACK_FILE`), and the next turn's prompt opens
+with it. Unset, the agent is never told how its tapes scored.
+
+The agent image is an **allowlist**: `sandbox/Dockerfile` (build args `ACTOR_GAME`, `ACTOR_CARDS`)
+rebuilds `/work` with only what a turn executes -- the venv, the loop, the game's adapter, the
+fleet's agent cards and the decoding plugin. Seeds, the paper and the rest of the repo are not
+in it.
+
+A scoring ban holds only if both of these are true:
+
+- **The scorer is out of reach.** The agent image has no scorer, build or ROM.
+- **The eval-service refuses the agent.** An unprivileged `POST /score` returns `429`.
+
+`scripts/preflight_ban.sh` checks both on a running arm.
+
+## Conditions and seeds
+
+- **scratch**: `best/` starts empty.
+- **seeded**: `best/` starts with one finishing tape from `seeds/`, copied in when the agent starts.
+
+Seeds are mounted at runtime and are never built into an image: `.dockerignore` excludes
+`seeds/`, and the actor image is an allowlist. Scratch arms therefore have no way to read a seed.
+
+The seeds are not human play:
+
+| seed | origin |
+|---|---|
+| `seeds/supertux/welcome_seed_9498f.json` | an LLM (GPT-5.6-sol) playthrough, converted to a tape |
+| `seeds/tuxemon/best_tuxemon_seed_105400f.json` | a scripted driver's tape, clipped to the scoring window |
+| `seeds/stk/stk_seed_ainative_168s.tape` | bot driver |
+
+## Outputs
+
+- **Orchestrator log:** each turn's verdict. A verified improvement appears as
+  `COPY-BACK <n>f -> best/`, written only after the scorer confirms the run reached the goal.
+- **`out/exported/<arm>/`:** the agent's tapes, plan and per-turn logs.
+
+Filenames the agent writes are claims. Re-score a tape before reporting its number.
+
+## Configuration
+
+`sandbox/.env` (template: `sandbox/.env.example`):
+
+| variable | meaning |
+|---|---|
+| `OPENROUTER_API_KEY`, `BASETEN_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | provider keys; only the ones your models use |
+| `EVAL_RESET_SECRET` | shared by each orchestrator and its eval-service; agents never receive it |
+| `STX_REPO`, `STX_BUILD_DIR`, `TUX_DIR`, `STK_DIR` | game paths, written by `scripts/setup_games.sh` |
+| `AGENTNET_SUBNET`, `AGENTNET_GATEWAY` | agent network; change if `172.18.0.0/16` is in use on your host |
+| `STX_SWEEPS`, `TUX_SWEEPS`, `TUXSEED_SWEEPS`, `STK_SWEEPS` | turns per arm for the SuperTux, Tuxemon scratch, Tuxemon seeded and SuperTuxKart fleets (default 200) |
+
+Game paths must be absolute. Each game is mounted into the containers at the same absolute path as
+on the host, so builds cannot be moved after they are made. The SuperTux build embeds its build
+directory, and the Tuxemon venv points into its own tree.
+
+## Known limitations
+
+- Under heavy parallel load, some providers rate-limit requests. The orchestrator aborts an arm
+  after 8 consecutive provider errors. Run fewer arms on the same provider at once if you see
+  aborts.
+- The from-scratch builds of the SuperTux WASM and the SuperTuxKart native binary follow each
+  game repo's own build script (`tools/stx_build_wasm.sh`, `docker/build-native.sh`).
+
+## Layout
+
+```
+games.lock                             pinned game repos
+scripts/setup_games.sh                 fetch + build the games, write paths to sandbox/.env
+scripts/firewall_agentnet.sh           block agents from reaching host services
+scripts/opencode_tas_loop.sh           one agent turn (run by the orchestrator)
+scripts/tas_orchestrator.sh            drives turns, scores candidates, keeps improvements
+scripts/scorers/<game>.sh              per-game adapter: prompt vocabulary + how to score
+scripts/{stx,tux,stk}_eval_service.py  metered scorer services
+sandbox/Dockerfile                     agent / orchestrator / eval-service image
+sandbox/Dockerfile.stk-eval            SuperTuxKart eval-service image
+sandbox/docker-compose.*.yml           fleets; base.yml holds the proxy and networks
+.opencode/agent/*.md                   agent cards (the prompt for each model and game)
+seeds/                                 seed tapes for the seeded condition
+tools/gemini_schema_proxy.py           host-side proxy for Gemini's tool-schema limits
+```
+
+## Citation
+
+The paper is on [arXiv](https://arxiv.org/abs/2610.08076) and in [`pdf/speedrunbench.pdf`](pdf/speedrunbench.pdf).
+If you find this code or paper to be useful, please cite the following:
+
+```bibtex
+@misc{fujinuma2026speedrunbenchchallengingllmagents,
+      title={SpeedrunBench: Challenging LLM Agents with Video Game Speedrunning},
+      author={Yoshinari Fujinuma and Keisuke Kamahori and Ryuto Koike and Abdelrahman Madkour and Varun Prashant Gangal and Monty Bichouna and Martyna Markiewicz and Shivani Jain and Duncan Curtis and Rebecca Qian and Anand Kannappan},
+      year={2026},
+      eprint={2610.08076},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2610.08076},
+}
+```

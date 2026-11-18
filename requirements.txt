@@ -1,0 +1,31 @@
+numpy>=1.21.0
+pyboy>=2.5.1       # Game Boy emulator
+pygame>=2.1.0       # For display and input handling
+pillow>=9.0.0      # Image processing
+pydantic>=2.0.0    # Data validation
+pytest>=7.0.0      # Testing
+tqdm>=4.65.0       # Progress bars
+rich>=13.0.0       # Rich terminal output
+gymnasium>=0.29.0   # For RL environment compatibility 
+opencv-python-headless # mp4 + screen recording (headless: no libGL needed in slim image)
+openai
+anthropic
+ImageHash # for image hashing
+# Core dependencies
+playwright>=1.40.0
+litellm>=1.0.0
+asyncio>=3.4.3
+
+# Optional dependencies
+python-dotenv>=1.0.0
+
+# For GUI
+sv_ttk
+# NES emulator (Super Mario Bros) — optional, only for `--emulator nes`.
+# Note: needs the numpy-2 compat shim in src/emulators/nes/nes_compat.py.
+gym-super-mario-bros>=7.4.0
+nes-py>=8.2.1
+# Real Game Boy Advance backend (src/emulators/mgba/interface.py) — needs the native
+# libmgba (apt: libmgba0.10t64, installed in sandbox/Dockerfile). For GBA-only titles
+# (Advance Wars, Fire Emblem GBA). Distinct from PyBoy (Game Boy / GBC).
+pygba>=0.2.9

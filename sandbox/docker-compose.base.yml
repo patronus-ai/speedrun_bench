@@ -1,0 +1,28 @@
+# Shared by every game's compose file (each one `include:`s this).
+#
+#   agentnet  INTERNAL network. Agent, eval-service and orchestrator containers live here and have
+#             no route out; the only egress is the proxy, which allowlists the inference hosts
+#             (sandbox/filter). The subnet is pinned so that its gateway -- where agents reach the
+#             host-side Gemini schema proxy as host.docker.internal -- has a known address.
+#   netout    the proxy's route to the internet.
+#
+# Every game file uses the same project name, so running several games at once shares ONE
+# agentnet instead of creating several networks that would claim the same subnet.
+name: speedrun-bench
+
+networks:
+  agentnet:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AGENTNET_SUBNET:-172.18.0.0/16}
+          gateway: ${AGENTNET_GATEWAY:-172.18.0.1}
+  netout: {}
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile.proxy
+    networks: [agentnet, netout]
+    restart: unless-stopped
